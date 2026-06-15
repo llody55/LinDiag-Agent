@@ -1,0 +1,31 @@
+# 安全命令白名单
+# 每行一个命令
+# 可以根据需要添加或删除命令
+
+ls
+pwd
+echo
+cat
+grep
+find
+ps
+top
+free
+df
+uname
+hostname
+ip
+netstat
+ss
+who
+w
+last
+history
+uptime
+date
+cal
+du
+file
+which
+whereis
+type

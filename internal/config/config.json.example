@@ -1,0 +1,16 @@
+{
+  "llm": {
+    "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "api_key": "YOUR_API_KEY_HERE",
+    "model_name": "qwen-flash-character-2026-02-26"
+  },
+  "safety_llm": {
+    "api_url": "https://api.siliconflow.cn/v1/chat/completions",
+    "api_key": "YOUR_API_KEY_HERE",
+    "model_name": "Qwen/Qwen3-8B"
+  },
+  "timeout": {
+    "command_timeout": 30,
+    "http_timeout": 180
+  }
+}

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Linux 服务器日常巡检报告</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 40px; }
+h1, h2, h3 { color: #333; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background-color: #f2f2f2; }
+ul { line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>Linux 服务器日常巡检报告</h1>
+
+<h2>一、 报告概要</h2>
+
+<h3>项目信息</h3>
+
+<table>
+<tr><th>项目</th><th>内容</th></tr>
+<tr><td>报告名称</td><td>Linux 服务器日常巡检报告</td></tr>
+<tr><td>主机名</td><td>{{hostname}}</td></tr>
+<tr><td>IP 地址</td><td>{{ip_address}}</td></tr>
+<tr><td>巡检时间</td><td>{{inspection_time}}</td></tr>
+<tr><td>操作系统</td><td>{{os_info}}</td></tr>
+<tr><td>内核版本</td><td>{{kernel_version}}</td></tr>
+<tr><td>运行时间</td><td>{{uptime_info}}</td></tr>
+<tr><td>巡检人员</td><td>运维人员</td></tr>
+<tr><td>总体状态</td><td>☐ 健康 / ☐ 亚健康 / ☐ 故障 (高风险)</td></tr>
+</table>
+
+<h2>二、 巡检详情</h2>
+
+<h3>1. 硬件与系统健康</h3>
+
+<table>
+<tr><th>检查类别</th><th>检查项</th><th>命令/参考</th><th>当前值</th><th>状态</th><th>说明</th></tr>
+<tr><td>硬件</td><td>CPU 型号/核心数</td><td>cat /proc/cpuinfo</td><td>{{cpu_info}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>硬件</td><td>内存总量</td><td>free -h</td><td>{{mem_info}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>硬件</td><td>硬盘健康</td><td>smartctl -a /dev/sda 或 查看 dmesg</td><td>无坏道/无报错</td><td>☐ 正常</td><td></td></tr>
+<tr><td>硬件</td><td>RAID 卡状态</td><td>hpssacli / MegaCli</td><td>正常</td><td>☐ 正常</td><td>若为物理机</td></tr>
+<tr><td>资源</td><td>磁盘使用率</td><td>df -h</td><td>{{disk_usage}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>资源</td><td>磁盘 Inode</td><td>df -i</td><td>/data (5%)</td><td>☐ 正常</td><td></td></tr>
+<tr><td>资源</td><td>内存使用率</td><td>free -m</td><td>{{mem_usage}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>资源</td><td>CPU 负载</td><td>uptime</td><td>{{cpu_load}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>资源</td><td>SWAP 使用率</td><td>free -m</td><td>{{swap_usage}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>性能</td><td>磁盘 I/O 等待</td><td>iostat -x 1 5</td><td>%util < 10%</td><td>☐ 正常</td><td></td></tr>
+</table>
+
+<h3>2. 安全审计与日志分析</h3>
+
+<table>
+<tr><th>检查类别</th><th>检查项</th><th>命令/参考</th><th>当前值</th><th>状态</th><th>说明</th></tr>
+<tr><td>认证审计</td><td>登录失败统计</td><td>lastb | wc -l 或 grep "Failed password" /var/log/secure</td><td>{{login_failures}}</td><td>☐ 正常</td><td></td></tr>
+<tr><td>认证审计</td><td>近期登录记录</td><td>last</td><td>正常</td><td>☐ 正常</td><td></td></tr>
+<tr><td>认证审计</td><td>特权用户</td><td>awk -F: '$3==0{print $1}' /etc/passwd</td><td>root</td><td>☐ 正常</td><td>检查是否有非root的UID 0账户</td></tr>
+<tr><td>认证审计</td><td>空密码账户</td><td>awk -F: 'length($2)==0' /etc/shadow</td><td>无</td><td>☐ 正常</td><td></td></tr>
+<tr><td>日志监控</td><td>auditd 服务</td><td>systemctl status auditd</td><td>active (running)</td><td>☐ 正常</td><td>审计服务运行中</td></tr>
+<tr><td>日志监控</td><td>日志完整性</td><td>ls -lh /var/log/messages /var/log/secure</td><td>正常轮转</td><td>☐ 正常</td><td></td></tr>
+<tr><td>日志监控</td><td>日志空间</td><td>df -h /var/log</td><td>已用 30%</td><td>☐ 正常</td><td></td></tr>
+<tr><td>日志监控</td><td>系统错误</td><td>grep -i error /var/log/messages | tail -20</td><td>{{system_error}}</td><td>☐ 正常</td><td></td></tr>
+</table>
+
+<h3>3. 网络与服务</h3>
+
+<table>
+<tr><th>检查类别</th><th>检查项</th><th>命令/参考</th><th>当前值</th><th>状态</th><th>说明</th></tr>
+<tr><td>网络</td><td>防火墙规则</td><td>iptables -L -n 或 firewall-cmd --list-all</td><td>规则已加载</td><td>☐ 正常</td><td>确认规则是否符合预期</td></tr>
+<tr><td>网络</td><td>网络连接数</td><td>netstat -anp | grep ESTABLISHED | wc -l</td><td>250</td><td>☐ 正常</td><td></td></tr>
+<tr><td>网络</td><td>网卡丢包</td><td>ifconfig eth0 | grep dropped</td><td>无丢包</td><td>☐ 正常</td><td></td></tr>
+<tr><td>服务</td><td>关键服务状态</td><td>systemctl status sshd crond rsyslog</td><td>均为 running</td><td>☐ 正常</td><td></td></tr>
+<tr><td>服务</td><td>异常端口监听</td><td>netstat -tulnp</td><td>查看非预期端口</td><td>☐ 正常</td><td></td></tr>
+<tr><td>服务</td><td>计划任务</td><td>crontab -l (以及 /etc/crontab)</td><td>无异常任务</td><td>☐ 正常</td><td>检查是否有恶意定时任务</td></tr>
+</table>
+
+<h2>三、 发现的问题与风险清单</h2>
+
+<p>此部分直接列出本次巡检中发现的异常项，是报告的核心价值所在。</p>
+
+{{issues_list}}
+
+<h2>四、 处理建议与优化方案</h2>
+
+<p>针对上述问题，给出具体的解决思路。</p>
+
+{{recommendations}}
+
+<h2>五、 巡检结论</h2>
+
+<p>结论： 服务器当前处于 {{overall_status}} 状态。核心业务服务运行正常，{{conclusion_details}}。</p>
+
+</body>
+</html>

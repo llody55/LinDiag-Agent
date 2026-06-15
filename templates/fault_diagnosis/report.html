@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>故障诊断报告</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        h2 {
+            color: #555;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 5px;
+        }
+        .info-section {
+            margin-bottom: 20px;
+        }
+        .info-item {
+            margin-bottom: 10px;
+        }
+        .info-label {
+            font-weight: bold;
+            display: inline-block;
+            width: 150px;
+        }
+        .analysis {
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .issues, .recommendations {
+            margin-left: 20px;
+        }
+        .conclusion {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e8f4f8;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>故障诊断报告</h1>
+        
+        <div class="info-section">
+            <h2>基本信息</h2>
+            <div class="info-item"><span class="info-label">主机名:</span> {{hostname}}</div>
+            <div class="info-item"><span class="info-label">IP地址:</span> {{ip_address}}</div>
+            <div class="info-item"><span class="info-label">诊断时间:</span> {{inspection_time}}</div>
+        </div>
+        
+        <div class="info-section">
+            <h2>系统信息</h2>
+            <div class="info-item"><span class="info-label">操作系统:</span> {{os_info}}</div>
+            <div class="info-item"><span class="info-label">内核版本:</span> {{kernel_version}}</div>
+            <div class="info-item"><span class="info-label">运行时间:</span> {{uptime_info}}</div>
+        </div>
+        
+        <div class="info-section">
+            <h2>资源使用情况</h2>
+            <div class="info-item"><span class="info-label">CPU信息:</span> {{cpu_info}}</div>
+            <div class="info-item"><span class="info-label">内存总量:</span> {{mem_info}}</div>
+            <div class="info-item"><span class="info-label">内存使用:</span> {{mem_usage}}</div>
+            <div class="info-item"><span class="info-label">CPU负载:</span> {{cpu_load}}</div>
+            <div class="info-item"><span class="info-label">磁盘使用:</span> {{disk_usage}}</div>
+            <div class="info-item"><span class="info-label">SWAP使用:</span> {{swap_usage}}</div>
+        </div>
+        
+        <div class="info-section">
+            <h2>系统状态</h2>
+            <div class="info-item"><span class="info-label">系统错误:</span> {{system_error}}</div>
+            <div class="info-item"><span class="info-label">登录失败:</span> {{login_failures}}</div>
+        </div>
+        
+        <div class="info-section">
+            <h2>故障分析</h2>
+            <div class="analysis">{{analysis}}</div>
+        </div>
+        
+        <div class="info-section">
+            <h2>发现的问题</h2>
+            <div class="issues">{{issues_list}}</div>
+        </div>
+        
+        <div class="info-section">
+            <h2>修复建议</h2>
+            <div class="recommendations">{{recommendations}}</div>
+        </div>
+        
+        <div class="conclusion">
+            <h2>结论</h2>
+            <div class="info-item"><span class="info-label">总体状态:</span> {{overall_status}}</div>
+            <div class="info-item"><span class="info-label">详细结论:</span> {{conclusion_details}}</div>
+        </div>
+    </div>
+</body>
+</html>
