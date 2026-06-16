@@ -1,284 +1,210 @@
 # LinDiag-Agent
 
-LinDiag-Agent 是一款基于 AI 的跨平台系统诊断与运维助手，支持 Linux、Windows、Kylin、UOS 等多种操作系统，为运维工程师提供智能化的故障诊断和系统分析能力。
+> 多场景通用运维专家 - 基于 AI 的智能系统诊断工具
+
+LinDiag-Agent 是一款基于大语言模型的智能运维诊断工具，支持故障诊断和智能问答两种模式，帮助运维人员快速定位和解决系统问题。
 
 ## ✨ 功能特性
 
-- **智能故障诊断**：基于大语言模型的专业故障诊断能力
-- **跨平台支持**：完美支持 Linux、Windows、Kylin、UOS 等操作系统
-- **安全防护**：内置命令风险分析引擎，支持白名单机制
-- **多模式工作**：故障诊断专家模式和智能运维助手模式
-- **报告生成**：支持 Markdown、HTML、PDF 多种格式报告输出
-- **历史记录**：支持对话历史的保存与恢复
+### 🎯 故障诊断模式（专业）
+- 自动化深度分析系统问题
+- 强制遵循安全检查流程
+- 生成标准化诊断报告
+- 输出格式包括：根本原因、风险影响、修复步骤、预防措施
 
-## 🏗️ 技术架构
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    LinDiag-Agent 架构                          │
-├─────────────────────────────────────────────────────────────────┤
-│  cmd/agent/main.go          # 主入口 - CLI交互与流程控制        │
-├─────────────────────────────────────────────────────────────────┤
-│  internal/config/           # 配置管理模块                      │
-│    └── config.go            # 环境变量/配置文件解析             │
-├─────────────────────────────────────────────────────────────────┤
-│  internal/llm/              # LLM 客户端模块                    │
-│    └── client.go            # AI API 调用、消息管理             │
-├─────────────────────────────────────────────────────────────────┤
-│  internal/platform/         # 平台抽象层                       │
-│    ├── platform.go          # 平台接口定义                     │
-│    ├── executor.go          # Linux 命令执行器                 │
-│    ├── executor_windows.go  # Windows 命令执行器               │
-│    ├── snapshot.go          # 系统快照采集                     │
-│    ├── factory.go           # 平台工厂（Linux）                │
-│    └── factory_windows.go   # 平台工厂（Windows）              │
-├─────────────────────────────────────────────────────────────────┤
-│  internal/safety/           # 安全分析模块                     │
-│    ├── analyzer.go          # 命令风险分析器                   │
-│    └── rules.go             # 危险命令规则与白名单             │
-├─────────────────────────────────────────────────────────────────┤
-│  internal/report/           # 报告生成模块                     │
-│    └── engine.go            # Markdown/HTML/PDF 报告生成       │
-└─────────────────────────────────────────────────────────────────┘
-```
+### 💬 智能模式（通用）
+- 自然语言交互，支持多轮对话
+- 动态执行系统命令获取真实数据
+- 支持 Docker、Kubernetes、Linux 等多种环境
+- 智能分析并提供简洁的建议
 
 ## 🚀 快速开始
 
-### 环境要求
-
-- Go 1.24+
-- 支持 Linux / Windows / Kylin / UOS
-
-### 安装方式
+### 安装
 
 ```bash
-# 克隆项目
+# 克隆仓库
 git clone https://github.com/llody55/LinDiag-Agent.git
 cd LinDiag-Agent
 
-# 编译项目
-go build -o lindiag-agent cmd/agent/main.go
+# 编译
+./build.sh
 
 # 运行
-./lindiag-agent
+./output/lindiag-agent_amd64_linux
 ```
 
-### 命令行参数
+### 配置
 
-```bash
-# 正常启动
-./lindiag-agent
-
-# 加载历史记录继续对话
-./lindiag-agent load history.json
-
-# 从历史记录生成报告
-./lindiag-agent report history.json md
-./lindiag-agent report history.json html
-./lindiag-agent report history.json pdf
-```
-
-## ⚙️ 配置说明
-
-### 配置方式
-
-支持通过环境变量或配置文件进行配置，优先级：**环境变量 > 配置文件 > 默认值**
-
-### 环境变量配置
-
-```bash
-# LLM 主模型配置
-export LINDIAG_LLM_API_URL="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-export LINDIAG_LLM_API_KEY="your-api-key"
-export LINDIAG_LLM_MODEL_NAME="qwen-flash-character-2026-02-26"
-
-# 安全分析模型配置
-export LINDIAG_SAFETY_LLM_API_URL="https://api.siliconflow.cn/v1/chat/completions"
-export LINDIAG_SAFETY_LLM_API_KEY="your-api-key"
-export LINDIAG_SAFETY_LLM_MODEL_NAME="Qwen/Qwen3-8B"
-
-# 超时配置（单位：秒）
-export LINDIAG_TIMEOUT_COMMAND=30
-export LINDIAG_TIMEOUT_HTTP=180
-```
-
-### 配置文件
-
-配置文件路径：
-- Linux/macOS: `~/.config/lindiag/config.json`
-- Windows: `%APPDATA%\lindiag\config.json`
+创建配置文件 `~/.config/lindiag/config.json`：
 
 ```json
 {
   "llm": {
-    "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-    "api_key": "YOUR_API_KEY_HERE",
-    "model_name": "qwen-flash-character-2026-02-26"
+    "api_url": "https://api.example.com/v1/chat/completions",
+    "api_key": "your-api-key-here",
+    "model_name": "your-model-name"
   },
-  "safety_llm": {
-    "api_url": "https://api.siliconflow.cn/v1/chat/completions",
-    "api_key": "YOUR_API_KEY_HERE",
-    "model_name": "Qwen/Qwen3-8B"
-  },
-  "timeout": {
-    "command_timeout": 30,
-    "http_timeout": 180
+  "command": {
+    "timeout_seconds": 60
   }
 }
 ```
 
-## 🎯 使用指南
-
-### 工作模式选择
-
-启动后会提示选择工作模式：
-
-1. **跨平台故障诊断专家 (专业版)**：适用于深度故障排查，支持多轮探测和最终诊断报告生成
-2. **智能运维助手 (全平台通用)**：适用于日常运维查询，支持聊天式交互
-
-### 命令执行格式
-
-AI 响应支持两种命令执行格式：
+**环境变量配置（优先级更高）：**
 
 ```bash
-# EXEC: 格式
-EXEC: ls -l /var/log
-
-# 代码块格式
-```exec
-df -h
+export LINDIAG_LLM_API_URL="https://api.example.com/v1/chat/completions"
+export LINDIAG_LLM_API_KEY="your-api-key-here"
+export LINDIAG_LLM_MODEL_NAME="your-model-name"
 ```
 
-### 风险等级说明
+## 📖 使用说明
 
-| 风险等级 | 说明 | 处理方式 |
-|---------|------|---------|
-| Safe | 安全命令 | 直接执行 |
-| Low | 低风险命令 | 提示后执行 |
-| Medium | 中风险命令 | 用户确认后执行 |
-| High | 高风险命令 | 用户确认后执行 |
-| Critical | 严重风险命令 | 用户确认后执行 |
-
-## 📊 报告生成
-
-支持三种报告格式：
+### 启动工具
 
 ```bash
-# 生成 Markdown 报告
-./lindiag-agent report history.json md
-
-# 生成 HTML 报告
-./lindiag-agent report history.json html
-
-# 生成 PDF 报告（需要 wkhtmltopdf）
-./lindiag-agent report history.json pdf
+./lindiag-agent
 ```
+
+### 选择工作模式
+
+```
+请选择工作模式：
+1. 故障诊断模式（专业）
+2. 智能模式（通用）
+
+请输入数字 (1-2): 
+```
+
+### 输入问题
+
+```
+请输入现象描述/日志（输入 ok 结束，多行输入）:
+> 帮我分析一下根目录的磁盘占用怎么这么高
+> ok
+```
+
+### 命令确认
+
+对于中风险命令，系统会提示确认：
+
+```
+┌─────────────────────────────────────────────────────────────
+│ ⚠️ 我需要执行这个命令，但需要您的确认
+├─────────────────────────────────────────────────────────────
+│ 命令: du -sh /* 2>/dev/null | sort -rh | head -20
+│ 说明: 查看目录大小
+│ 风险: 命令包含相对路径
+├─────────────────────────────────────────────────────────────
+│ 选项: 1. Yes  2. Yes, and don't ask me again  3. No
+└─────────────────────────────────────────────────────────────
+Enter your choice: 
+```
+
+## ⚙️ 配置参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `llm.api_url` | string | 无 | LLM API 地址 |
+| `llm.api_key` | string | 无 | API Key |
+| `llm.model_name` | string | 无 | 模型名称 |
+| `command.timeout_seconds` | int | 30 | 命令执行超时时间（秒） |
 
 ## 🛡️ 安全特性
 
-### 命令白名单
+- **命令白名单**：只允许执行安全的命令
+- **风险评估**：自动评估命令风险等级（安全/低/中/高/严重）
+- **用户确认**：中高风险命令需要用户确认后才能执行
+- **操作记录**：记录所有执行的命令和结果
 
-默认白名单包含安全读取命令：`ls`, `pwd`, `echo`, `cat`, `grep`, `find`, `ps`, `top`, `free`, `df` 等。
+## 📊 支持的环境检测
 
-可通过 `whitelist.txt` 文件自定义白名单：
+- ✅ Docker 环境
+- ✅ Kubernetes 客户端
+- ✅ K8s 集群连接状态
+- ✅ Prometheus 部署检测
+- ✅ Helm 客户端
+- ✅ nali IP归属地查询工具
 
-```txt
-# whitelist.txt - 安全命令白名单
-ls
-pwd
-echo
-cat
-grep
-```
+## 📝 更新日志
 
-### 危险命令检测
+### v3.1 (2026-06-16)
 
-系统会自动检测以下危险操作：
-- 文件系统操作：`rm`, `mv`, `chmod`, `chown`
-- 系统操作：`reboot`, `shutdown`, `poweroff`, `halt`
-- 存储操作：`umount`, `mount`, `fsck`, `dd`
-- 配置修改：`sed -i`, `apt-get`, 文件写入 `/etc/`
+**功能优化**
 
-## 🔧 开发指南
+1. **命令执行进度显示**
+   - 执行命令前显示 `Running: xxx`，让用户清楚知道当前正在执行什么操作
 
-### 项目结构
+2. **"不再询问"选项**
+   - 对于中风险命令，新增选项：`1. Yes  2. Yes, and don't ask me again  3. No`
+   - 用户选择选项 2 后，后续中风险命令将自动确认
+
+3. **智能模式交互优化**
+   - 重新设计了用户输入界面，使用更清晰的菜单格式
+
+4. **环境自动检测**
+   - 启动时自动检测并显示 Docker、Kubernetes、Prometheus、Helm 等环境
+
+5. **命令超时配置化**
+   - 支持通过配置文件设置命令执行超时时间
+   - 默认值：30秒
+
+6. **执行等待提示**
+   - 执行长时间命令时显示进度提示
+   - 轮换显示抚慰消息："正在努力处理中..."、"数据量较大，请耐心等待..."、"马上就好，请稍等..."
+
+7. **空响应处理**
+   - 当 AI 返回空内容时自动重试最多3次
+   - 重试后仍为空时显示友好提示
+
+**安全改进**
+
+1. **移除内置 API Key**
+   - 不再保留内置的模型链接和 API Key
+   - 用户必须通过配置文件配置自己的 LLM 参数
+
+2. **配置检查**
+   - 启动时检查必要的配置参数
+   - 未配置时显示清晰的配置指引
+
+**UI 优化**
+
+1. **输出格式优化**
+   - 使用更美观的边框样式（╔═║╚）
+   - 增加适当的换行和间距
+   - AI 分析内容前后添加空行分隔
+
+2. **用户输入支持**
+   - 支持 `"y"`、`"yes"`、`"1"` 等多种确认方式
+
+## 📁 项目结构
 
 ```
 LinDiag-Agent/
 ├── cmd/
 │   └── agent/
-│       └── main.go          # 主入口
+│       └── main.go          # 主程序入口
 ├── internal/
 │   ├── config/              # 配置管理
 │   ├── llm/                 # LLM 客户端
-│   ├── platform/            # 平台抽象
-│   ├── safety/              # 安全分析
-│   └── report/              # 报告生成
-├── go.mod
-├── go.sum
-└── README.md
+│   ├── output/              # 输出格式化
+│   ├── platform/            # 平台工具
+│   ├── report/              # 报告生成
+│   └── safety/              # 安全检查
+├── build.sh                 # 构建脚本
+└── README.md                # 项目文档
 ```
 
-### 模块职责
-
-| 模块 | 职责 | 核心功能 |
-|-----|------|---------|
-| `config` | 配置管理 | 环境变量解析、配置文件读写 |
-| `llm` | AI 交互 | API 调用、消息管理、输入清理 |
-| `platform` | 平台适配 | 命令执行、系统快照、跨平台支持 |
-| `safety` | 安全分析 | 命令风险评估、AI 增强分析 |
-| `report` | 报告生成 | 多格式报告输出、模板支持 |
-
-### 跨平台开发
-
-平台抽象层通过 Go 的 build tags 实现跨平台支持：
-
-```go
-//go:build !windows
-package platform
-
-func NewPlatform() Platform {
-    return NewLinuxPlatform()
-}
-```
-
-```go
-//go:build windows
-package platform
-
-func NewPlatform() Platform {
-    return NewWindowsPlatform()
-}
-```
-
-## 📝 许可证
-
-MIT License
-
-## 🤝 贡献指南
+## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
 
-### 贡献流程
+## 📄 许可证
 
-1. Fork 本仓库
-2. 创建特性分支：`git checkout -b feature/xxx`
-3. 提交变更：`git commit -m "feat: xxx"`
-4. 推送到分支：`git push origin feature/xxx`
-5. 创建 Pull Request
-
-### 代码规范
-
-- 遵循 Go 官方代码风格
-- 使用 `go fmt` 格式化代码
-- 编写单元测试
-- 保持代码简洁清晰
+MIT License
 
 ## 📧 联系方式
 
 如有问题或建议，请通过以下方式联系：
-
-- 提交 Issue
-
----
-**注意**: 使用前请确保已正确配置 API Key，请充分在测试环境进行测试，生产环境请慎重运行，并遵守相关服务提供商的使用条款。
+- GitHub Issues: https://github.com/llody55/LinDiag-Agent/issues

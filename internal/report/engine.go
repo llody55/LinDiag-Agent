@@ -254,11 +254,9 @@ func LoadTemplate(templatePath string, format string, content map[string]string)
 
 // 生成Markdown报告
 func GenerateMarkdownReport(filename string, content map[string]string) {
-	// 创建平台实例
-	p := platform.NewPlatform()
 	// 获取当前主机的IP地址和主机名
-	ipAddress := p.GetIPAddress()
-	hostname := p.GetHostname()
+	ipAddress := platform.GetIPAddress()
+	hostname := platform.GetHostname()
 
 	// 尝试确定模式ID
 	modeID := 2 // 默认使用智能模式
@@ -331,11 +329,9 @@ func GenerateMarkdownReport(filename string, content map[string]string) {
 
 // 生成HTML报告
 func GenerateHTMLReport(filename string, content map[string]string) {
-	// 创建平台实例
-	p := platform.NewPlatform()
 	// 获取当前主机的IP地址和主机名
-	ipAddress := p.GetIPAddress()
-	hostname := p.GetHostname()
+	ipAddress := platform.GetIPAddress()
+	hostname := platform.GetHostname()
 
 	// 尝试确定模式ID
 	modeID := 2 // 默认使用智能模式

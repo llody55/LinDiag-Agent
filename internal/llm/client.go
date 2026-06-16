@@ -15,16 +15,10 @@ import (
 	"github.com/LinDiag-Agent/internal/platform"
 )
 
-var appConfig *config.Config
-
-// getHTTPClient 获取配置的 HTTP 客户端
-func getHTTPClient() *http.Client {
-	timeout := 180 // 默认180秒
-	if appConfig != nil {
-		timeout = appConfig.Timeout.HTTPTimeout
-	}
-	return &http.Client{Timeout: time.Duration(timeout) * time.Second}
-}
+var (
+	httpClient = &http.Client{Timeout: 180 * time.Second}
+	appConfig  *config.Config
+)
 
 // Init 初始化 LLM 模块
 func Init() error {
@@ -84,7 +78,7 @@ func CallAI(messages []Message) string {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+appConfig.LLM.APIKey)
 
-		resp, err := getHTTPClient().Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			fmt.Printf("\n[网络错误] %v\n", err)
 			if retry == 2 {
@@ -102,102 +96,28 @@ func CallAI(messages []Message) string {
 		}
 
 		var res ChatResponse
-		_ = json.Unmarshal(body, &res)
+		if err := json.Unmarshal(body, &res); err != nil {
+			fmt.Printf("\n[解析错误] %v\n", err)
+			return "【错误】: 解析 AI 响应失败"
+		}
 		if len(res.Choices) > 0 {
-			return res.Choices[0].Message.Content
-		}
-		return "AI 返回空内容"
-	}
-	return "【错误】: AI 调用失败（重试3次后放弃）"
-}
-
-// 调用安全分析AI API
-func CallSafetyAI(messages []Message) string {
-	if appConfig == nil {
-		if err := Init(); err != nil {
-			return "【错误】: 初始化配置失败"
-		}
-	}
-
-	// 使用副模型进行安全分析
-	apiURL := appConfig.SafetyLLM.APIURL
-	apiKey := appConfig.SafetyLLM.APIKey
-	modelName := appConfig.SafetyLLM.ModelName
-
-	// 如果副模型未配置，使用主模型
-	if apiURL == "" || apiKey == "" || modelName == "" {
-		apiURL = appConfig.LLM.APIURL
-		apiKey = appConfig.LLM.APIKey
-		modelName = appConfig.LLM.ModelName
-	}
-
-	if apiKey == "" || apiKey == "你的API_KEY" {
-		return "【错误】: 请先配置正确的 API_KEY"
-	}
-
-	for retry := 0; retry < 3; retry++ {
-		reqBody, err := json.Marshal(ChatRequest{Model: modelName, Messages: messages})
-		if err != nil {
-			if retry == 2 {
-				return "【错误】: JSON 序列化失败"
+			content := strings.TrimSpace(res.Choices[0].Message.Content)
+			if content == "" {
+				fmt.Println("AI 返回空内容，重试中...")
+				if retry < 2 {
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				return ""
 			}
+			return content
+		}
+		fmt.Println("AI 返回空内容，重试中...")
+		if retry < 2 {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-
-		req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBody))
-		if err != nil {
-			if retry == 2 {
-				return "【错误】: 创建请求失败"
-			}
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-
-		resp, err := getHTTPClient().Do(req)
-		if err != nil {
-			if retry == 2 {
-				return "【错误】: API 连接失败，请检查网络或 API_KEY"
-			}
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			if retry == 2 {
-				return "【错误】: 读取响应失败"
-			}
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			if retry == 2 {
-				return fmt.Sprintf("【API 错误】HTTP %d: %s", resp.StatusCode, string(body))
-			}
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		var res ChatResponse
-		err = json.Unmarshal(body, &res)
-		if err != nil {
-			if retry == 2 {
-				return "【错误】: 解析响应失败"
-			}
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		if len(res.Choices) > 0 {
-			return res.Choices[0].Message.Content
-		}
-		return "AI 返回空内容"
+		return ""
 	}
 	return "【错误】: AI 调用失败（重试3次后放弃）"
 }
@@ -235,15 +155,11 @@ func TruncateOutput(output string, maxChars int) string {
 }
 
 // 加载默认聊天历史
-func LoadDefaultChatHistory(reader *bufio.Reader, modeID int, systemPrompt string, snapshotCmds []string, rules string, p platform.Platform) []Message {
+func LoadDefaultChatHistory(reader *bufio.Reader, modeID int, systemPrompt string, snapshotCmds []string, rules string) []Message {
 	fmt.Println("\n正在采集系统快照（请稍等）...")
-	// 获取当前主机信息
-	systemInfo := platform.GetSystemInfo()
-	// 添加操作系统信息到系统提示
-	enhancedPrompt := systemPrompt + "\n\n当前环境信息：\n- 主机名: " + systemInfo.Hostname + "\n- 操作系统: " + systemInfo.Platform + " " + systemInfo.PlatformVersion + "\n- 系统类型: " + systemInfo.OS + "\n" + rules
 	history := []Message{
-		{Role: "system", Content: enhancedPrompt},
-		{Role: "user", Content: "初始系统快照:\n" + p.GetSnapshot(snapshotCmds)},
+		{Role: "system", Content: systemPrompt + rules},
+		{Role: "user", Content: "初始系统快照:\n" + platform.GetSnapshot(snapshotCmds)},
 	}
 
 	fmt.Println("\n请输入现象描述/日志（输入 ok 结束，多行输入）:")

@@ -2,28 +2,34 @@ package platform
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 )
 
 // GetSnapshot 采集系统快照
-func (p *LinuxPlatform) GetSnapshot(cmds []string) string {
+func GetSnapshot(cmds []string) string {
 	var ctx strings.Builder
 	ctx.WriteString("=== 系统初始快照 ===\n")
 
-	// 使用 gopsutil 获取系统信息
-	systemInfo := GetSystemInfo()
-	ctx.WriteString(fmt.Sprintf("主机名: %s\n", systemInfo.Hostname))
-	ctx.WriteString(fmt.Sprintf("操作系统: %s %s\n", systemInfo.Platform, systemInfo.PlatformVersion))
-	ctx.WriteString(fmt.Sprintf("CPU: %s\n", systemInfo.CPU))
-	ctx.WriteString(fmt.Sprintf("内存: %s\n", systemInfo.Memory))
-	ctx.WriteString(fmt.Sprintf("磁盘: %s\n", systemInfo.Disk))
-	ctx.WriteString(fmt.Sprintf("网络: %s\n", systemInfo.Network))
-	ctx.WriteString("\n")
+	// 先收集最基础的系统信息
+	basicCmds := []string{
+		"uname -a",
+		"cat /etc/os-release 2>/dev/null || cat /etc/redhat-release 2>/dev/null || cat /etc/debian_version 2>/dev/null || echo 'OS info not found'",
+		"lsb_release -a 2>/dev/null || echo 'lsb_release not available'",
+		"arch",
+	}
+
+	for _, c := range basicCmds {
+		cmd := "timeout 10 " + c
+		out, _ := exec.Command("sh", "-c", cmd).CombinedOutput()
+		ctx.WriteString(fmt.Sprintf("$ %s\n%s\n\n", c, string(out)))
+	}
 
 	// 然后根据模式添加特定的基础命令
 	for _, c := range cmds {
-		out, _ := p.ExecuteCommand(c)
-		ctx.WriteString(fmt.Sprintf("$ %s\n%s\n\n", c, out))
+		cmd := "timeout 10 " + c
+		out, _ := exec.Command("sh", "-c", cmd).CombinedOutput()
+		ctx.WriteString(fmt.Sprintf("$ %s\n%s\n\n", c, string(out)))
 	}
 
 	return ctx.String()
