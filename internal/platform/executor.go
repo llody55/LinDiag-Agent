@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/LinDiag-Agent/internal/output"
 )
 
 var defaultTimeoutSeconds = 30
@@ -36,6 +38,8 @@ func ExecuteCommandWithTimeout(cmd string, timeoutSeconds int) (string, error) {
 	defer cancel()
 
 	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	// 设置进程组（平台特定实现）
+	setProcessGroup(c)
 
 	var out []byte
 	var err error
@@ -46,46 +50,58 @@ func ExecuteCommandWithTimeout(cmd string, timeoutSeconds int) (string, error) {
 		close(done)
 	}()
 
+	// 进度提示：只在命令执行超过 5 秒时才显示
+	// 同时监听 ctx.Done()，确保超时后立即停止（不会泄漏）
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
-		count := 0
+
+		elapsed := 5
 		for {
 			select {
 			case <-done:
 				return
+			case <-ctx.Done():
+				return
 			case <-ticker.C:
-				count++
-				if count <= 3 {
-					fmt.Printf("   (%ds)...\r", count*3)
-				} else if count%3 == 0 {
-					messages := []string{"正在努力处理中...", "数据量较大，请耐心等待...", "马上就好，请稍等..."}
-					fmt.Printf("   %s\r", messages[(count/3-1)%3])
-				}
+				elapsed += 5
+				output.Inplacef("   ⏳ 已执行 %ds...", elapsed)
 			}
 		}
 	}()
 
 	select {
 	case <-done:
-		fmt.Print("                           \r")
+		output.ClearLine()
 		return string(out), err
 	case <-ctx.Done():
-		fmt.Print("                           \r")
-		if c.Process != nil {
-			c.Process.Kill()
+		output.ClearLine()
+		// 杀掉整个进程组（平台特定实现）
+		killProcessGroup(c)
+		// 等待 CombinedOutput 返回，避免 goroutine 泄漏
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
 		}
 		return string(out) + fmt.Sprintf("\n[超时] 命令执行超过%d秒，已自动终止", timeoutSeconds), ctx.Err()
 	}
 }
 
 func ExecuteCommandWithProgress(cmd string) (string, error) {
-	fmt.Printf("Running: %s\n", cmd)
+	output.Statusln("Running: %s", cmd)
 	return ExecuteCommand(cmd)
 }
 
 func ExecuteCommandWithProgressAndTimeout(cmd string, timeoutSeconds int) (string, error) {
-	fmt.Printf("Running: %s\n", cmd)
+	output.Statusln("Running: %s", cmd)
 	return ExecuteCommandWithTimeout(cmd, timeoutSeconds)
 }
 

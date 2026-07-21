@@ -1,34 +1,60 @@
 package llm
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/LinDiag-Agent/internal/config"
-	"github.com/LinDiag-Agent/internal/platform"
+	"github.com/LinDiag-Agent/internal/output"
+	openai "github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 var (
-	httpClient = &http.Client{Timeout: 180 * time.Second}
-	appConfig  *config.Config
+	appConfig *config.Config
+	client    *openai.Client
+	// degradedFormat 记忆降级状态：一旦 API 不支持某格式，后续不再尝试
+	degradedFormat ResponseFormatType
 )
+
+// ResponseFormatType 别名，避免循环导入
+type ResponseFormatType = config.ResponseFormatType
 
 // Init 初始化 LLM 模块
 func Init() error {
-	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return err
 	}
 	appConfig = cfg
+
+	// 配置 OpenAI 兼容客户端（支持自定义 base_url，适配 DeepSeek 等中转）
+	clientCfg := openai.DefaultConfig(appConfig.LLM.APIKey)
+	if appConfig.LLM.APIURL != "" {
+		// SDK 的 BaseURL 只需要 base 部分（如 https://api.deepseek.com/v1），
+		// 它会自动拼接 /chat/completions。
+		// 但用户配置可能是完整端点 URL，需要兼容处理。
+		clientCfg.BaseURL = normalizeBaseURL(appConfig.LLM.APIURL)
+	}
+	client = openai.NewClientWithConfig(clientCfg)
 	return nil
+}
+
+// normalizeBaseURL 将完整端点 URL 转换为 SDK 所需的 base URL。
+// 例如 https://api.deepseek.com/v1/chat/completions → https://api.deepseek.com/v1
+func normalizeBaseURL(url string) string {
+	// 移除末尾斜杠
+	url = strings.TrimSuffix(url, "/")
+	// 移除 /chat/completions 后缀（SDK 会自动拼接）
+	if strings.HasSuffix(url, "/chat/completions") {
+		url = strings.TrimSuffix(url, "/chat/completions")
+	}
+	return url
 }
 
 // GetConfig 获取当前配置
@@ -42,167 +68,272 @@ func SaveConfig(cfg *config.Config) error {
 	return config.SaveConfig(cfg)
 }
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-}
-
-type ChatResponse struct {
-	Choices []struct {
-		Message Message `json:"message"`
-	} `json:"choices"`
-}
-
-// 调用AI API
-func CallAI(messages []Message) string {
+// CallAI 调用 LLM 并返回结构化响应。
+// 支持 json_schema / json_object / none 三种模式自动降级。
+// context 用于超时和取消控制。
+func CallAI(ctx context.Context, messages []Message) (AgentResponse, error) {
 	if appConfig == nil {
 		if err := Init(); err != nil {
-			return "【错误】: 初始化配置失败"
+			return AgentResponse{}, fmt.Errorf("初始化配置失败: %w", err)
 		}
 	}
-
 	if appConfig.LLM.APIKey == "" || appConfig.LLM.APIKey == "你的API_KEY" {
-		return "【错误】: 请先配置正确的 API_KEY"
+		return AgentResponse{}, errors.New("请先配置正确的 API_KEY")
+	}
+	if client == nil {
+		return AgentResponse{}, errors.New("LLM 客户端未初始化")
 	}
 
-	for retry := 0; retry < 3; retry++ {
-		fmt.Printf("\n[%s] 正在连接 AI (尝试 %d/3)...", time.Now().Format("15:04:05"), retry+1)
+	// 默认上下文超时 180 秒（LLM 推理可能较慢）
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
+		defer cancel()
+	}
 
-		reqBody, _ := json.Marshal(ChatRequest{Model: appConfig.LLM.ModelName, Messages: messages})
-		req, _ := http.NewRequest("POST", appConfig.LLM.APIURL, bytes.NewBuffer(reqBody))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+appConfig.LLM.APIKey)
+	oaiMessages := make([]openai.ChatCompletionMessage, 0, len(messages))
+	for _, m := range messages {
+		oaiMessages = append(oaiMessages, openai.ChatCompletionMessage{
+			Role:    m.Role,
+			Content: m.Content,
+		})
+	}
 
-		resp, err := httpClient.Do(req)
+	// 根据降级记忆决定使用哪种格式
+	format := appConfig.LLM.ResponseFormat
+	if degradedFormat == config.ResponseFormatJSONObject && format == config.ResponseFormatJSONSchema {
+		format = config.ResponseFormatJSONObject
+	} else if degradedFormat == config.ResponseFormatNone {
+		format = config.ResponseFormatNone
+	}
+
+	switch format {
+	case config.ResponseFormatJSONSchema:
+		return callWithJSONSchema(ctx, oaiMessages)
+	case config.ResponseFormatJSONObject:
+		return callWithJSONObject(ctx, oaiMessages)
+	default:
+		return callWithNone(ctx, oaiMessages)
+	}
+}
+
+// callWithJSONSchema 使用 Structured Outputs（最强约束），自动从 Go struct 生成 schema
+func callWithJSONSchema(ctx context.Context, msgs []openai.ChatCompletionMessage) (AgentResponse, error) {
+	schema, err := jsonschema.GenerateSchemaForType(AgentResponse{})
+	if err != nil {
+		// schema 生成失败，降级到 json_object
+		output.Degradef("生成 JSON Schema 失败 (%v)，降级到 JSON Mode", err)
+		return callWithJSONObject(ctx, msgs)
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		output.StatusTimef(output.Cyan, "正在连接 AI (尝试 %d/3, Structured Outputs)...", attempt+1)
+
+		req := openai.ChatCompletionRequest{
+			Model:    appConfig.LLM.ModelName,
+			Messages: msgs,
+			ResponseFormat: &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+				JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+					Name:   "agent_response",
+					Schema: schema,
+					Strict: true,
+				},
+			},
+		}
+
+		resp, err := client.CreateChatCompletion(ctx, req)
 		if err != nil {
-			fmt.Printf("\n[网络错误] %v\n", err)
-			if retry == 2 {
-				return "【错误】: API 连接失败，请检查网络或 API_KEY"
+			if isRetryableError(err) && attempt < 2 {
+				output.WarningInplacef("%v", err)
+				time.Sleep(3 * time.Second)
+				continue
 			}
-			time.Sleep(3 * time.Second)
-			continue
-		}
-		defer resp.Body.Close()
-
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != http.StatusOK {
-			fmt.Printf("\n[API 返回错误] HTTP %d: %s\n", resp.StatusCode, string(body))
-			return fmt.Sprintf("【API 错误】HTTP %d", resp.StatusCode)
-		}
-
-		var res ChatResponse
-		if err := json.Unmarshal(body, &res); err != nil {
-			fmt.Printf("\n[解析错误] %v\n", err)
-			return "【错误】: 解析 AI 响应失败"
-		}
-		if len(res.Choices) > 0 {
-			content := strings.TrimSpace(res.Choices[0].Message.Content)
-			if content == "" {
-				fmt.Println("AI 返回空内容，重试中...")
-				if retry < 2 {
-					time.Sleep(2 * time.Second)
-					continue
-				}
-				return ""
+			// 若 API 不支持 json_schema，降级到 json_object
+			if isUnsupportedFormatError(err) {
+				output.Degradef("当前 API 不支持 Structured Outputs，降级到 JSON Mode（后续不再尝试）")
+				degradedFormat = config.ResponseFormatJSONObject
+				return callWithJSONObject(ctx, msgs)
 			}
-			return content
+			return AgentResponse{}, fmt.Errorf("AI 调用失败: %w", err)
 		}
-		fmt.Println("AI 返回空内容，重试中...")
-		if retry < 2 {
+
+		if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
+			output.WarningInplacef("AI 返回空内容，重试中...")
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		return ""
+
+		var result AgentResponse
+		if err := schema.Unmarshal(resp.Choices[0].Message.Content, &result); err != nil {
+			// schema 解析失败，尝试普通 JSON 解析
+			if jsonErr := json.Unmarshal([]byte(resp.Choices[0].Message.Content), &result); jsonErr != nil {
+				return AgentResponse{}, fmt.Errorf("解析 AI 结构化响应失败: %w", jsonErr)
+			}
+		}
+		return result, nil
 	}
-	return "【错误】: AI 调用失败（重试3次后放弃）"
+	return AgentResponse{}, errors.New("AI 调用失败（重试3次后放弃）")
 }
 
-// 清理输入内容
-func CleanInput(input string) string {
-	reAnsi := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	input = reAnsi.ReplaceAllString(input, "")
-	reControl := regexp.MustCompile(`[\x00-\x1F\x7F]`)
-	return reControl.ReplaceAllString(input, "")
-}
+// callWithJSONObject 使用 JSON Mode（中等约束），保证输出合法 JSON
+func callWithJSONObject(ctx context.Context, msgs []openai.ChatCompletionMessage) (AgentResponse, error) {
+	// 在消息中注入格式引导提示
+	guidedMsgs := injectJSONGuidance(msgs)
 
-// 截断输出内容
-func TruncateOutput(output string, maxChars int) string {
-	if len(output) <= maxChars {
-		return output
-	}
-	lines := strings.Split(output, "\n")
-	// 如果行数超过50，使用简单的截断方式，避免内存溢出
-	if len(lines) > 50 {
-		// 只保留前20行和后20行
-		keep := 20
-		head := strings.Join(lines[:keep], "\n")
-		tail := strings.Join(lines[len(lines)-keep:], "\n")
-		return head + fmt.Sprintf("\n\n... [输出过长，已截断 %d 行] ...\n\n", len(lines)-keep*2) + tail
-	}
-	// 如果行数不超过50，使用原来的截断方式
-	keep := 18
-	if len(lines) < keep*2 {
-		keep = len(lines) / 2
-	}
-	head := strings.Join(lines[:keep], "\n")
-	tail := strings.Join(lines[len(lines)-keep:], "\n")
-	return head + fmt.Sprintf("\n\n... [输出过长，已截断 %d 行] ...\n\n", len(lines)-keep*2) + tail
-}
+	for attempt := 0; attempt < 3; attempt++ {
+		output.StatusTimef(output.Cyan, "正在连接 AI (尝试 %d/3, JSON Mode)...", attempt+1)
 
-// 加载默认聊天历史
-func LoadDefaultChatHistory(reader *bufio.Reader, modeID int, systemPrompt string, snapshotCmds []string, rules string) []Message {
-	fmt.Println("\n正在采集系统快照（请稍等）...")
-	history := []Message{
-		{Role: "system", Content: systemPrompt + rules},
-		{Role: "user", Content: "初始系统快照:\n" + platform.GetSnapshot(snapshotCmds)},
-	}
-
-	fmt.Println("\n请输入现象描述/日志（输入 ok 结束，多行输入）:")
-	var rawInput strings.Builder
-	hasContent := false
-	for {
-		fmt.Print("> ")
-		line, _ := reader.ReadString('\n')
-		cleanLine := CleanInput(line)
-		trimmed := strings.TrimSpace(cleanLine)
-
-		if strings.EqualFold(trimmed, "ok") {
-			break
+		req := openai.ChatCompletionRequest{
+			Model:    appConfig.LLM.ModelName,
+			Messages: guidedMsgs,
+			ResponseFormat: &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			},
 		}
 
-		if trimmed != "" {
-			hasContent = true
-			rawInput.WriteString(cleanLine)
-			rawInput.WriteString("\n")
-		} else if hasContent {
-			rawInput.WriteString("\n")
+		resp, err := client.CreateChatCompletion(ctx, req)
+		if err != nil {
+			if isRetryableError(err) && attempt < 2 {
+				output.WarningInplacef("%v", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			if isUnsupportedFormatError(err) {
+				output.Degradef("当前 API 不支持 JSON Mode，降级到无格式约束模式（后续不再尝试）")
+				degradedFormat = config.ResponseFormatNone
+				return callWithNone(ctx, msgs)
+			}
+			return AgentResponse{}, fmt.Errorf("AI 调用失败: %w", err)
 		}
+
+		if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
+			output.WarningInplacef("AI 返回空内容，重试中...")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		content := strings.TrimSpace(resp.Choices[0].Message.Content)
+		var result AgentResponse
+		if err := json.Unmarshal([]byte(content), &result); err != nil {
+			// 尝试从可能的 markdown 代码块中提取 JSON
+			cleaned := extractJSONFromMarkdown(content)
+			if jsonErr := json.Unmarshal([]byte(cleaned), &result); jsonErr != nil {
+				return AgentResponse{Analysis: content}, nil // 至少返回原始文本作为分析
+			}
+		}
+		return result, nil
 	}
-	history = append(history, Message{Role: "user", Content: "用户需求:\n" + rawInput.String()})
-	return history
+	return AgentResponse{}, errors.New("AI 调用失败（重试3次后放弃）")
 }
 
-// 修复连续的assistant消息
-func FixConsecutiveAssistantMessages(messages []Message) []Message {
-	if len(messages) < 2 {
-		return messages
-	}
+// callWithNone 无格式约束（兜底），靠提示词引导 + 尽力解析
+func callWithNone(ctx context.Context, msgs []openai.ChatCompletionMessage) (AgentResponse, error) {
+	guidedMsgs := injectJSONGuidance(msgs)
 
-	fixed := []Message{messages[0]}
-	for i := 1; i < len(messages); i++ {
-		current := messages[i]
-		previous := fixed[len(fixed)-1]
+	for attempt := 0; attempt < 3; attempt++ {
+		output.StatusTimef(output.Cyan, "正在连接 AI (尝试 %d/3)...", attempt+1)
 
-		if current.Role == "assistant" && previous.Role == "assistant" {
-			// 插入一个用户消息作为分隔
-			fixed = append(fixed, Message{Role: "user", Content: "继续分析"})
+		req := openai.ChatCompletionRequest{
+			Model:    appConfig.LLM.ModelName,
+			Messages: guidedMsgs,
 		}
-		fixed = append(fixed, current)
+
+		resp, err := client.CreateChatCompletion(ctx, req)
+		if err != nil {
+			if isRetryableError(err) && attempt < 2 {
+				output.WarningInplacef("%v", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return AgentResponse{}, fmt.Errorf("AI 调用失败: %w", err)
+		}
+
+		if len(resp.Choices) == 0 || strings.TrimSpace(resp.Choices[0].Message.Content) == "" {
+			output.WarningInplacef("AI 返回空内容，重试中...")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		content := strings.TrimSpace(resp.Choices[0].Message.Content)
+		// 尽力从自由文本中提取 JSON
+		cleaned := extractJSONFromMarkdown(content)
+		var result AgentResponse
+		if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+			// 解析失败，把原始文本作为分析返回
+			return AgentResponse{Analysis: content}, nil
+		}
+		return result, nil
 	}
-	return fixed
+	return AgentResponse{}, errors.New("AI 调用失败（重试3次后放弃）")
+}
+
+// injectJSONGuidance 在消息末尾注入 JSON 格式引导提示
+func injectJSONGuidance(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	guidance := "\n\n[重要] 请严格以 JSON 格式回复，结构如下：\n" +
+		`{"analysis":"你的分析说明","commands":[{"command":"要执行的命令","purpose":"命令目的","expected_risk":"safe|low|medium|high|critical"}],"issues":[{"severity":"critical|high|medium|low|info","category":"cpu|memory|disk|network|process|kernel|service|container|kubernetes|security|other","title":"问题一句话标题","evidence":"引用实际命令输出作为证据","suggestion":"修复建议与步骤"}],"is_final":false}` + "\n" +
+		"不要输出 JSON 以外的任何内容。无需执行命令时 commands 为空数组；未识别到明确问题时 issues 为空数组。"
+
+	last := msgs[len(msgs)-1]
+	if last.Role == "user" {
+		msgs[len(msgs)-1] = openai.ChatCompletionMessage{
+			Role:    last.Role,
+			Content: last.Content + guidance,
+		}
+	} else {
+		msgs = append(msgs, openai.ChatCompletionMessage{
+			Role:    "user",
+			Content: guidance,
+		})
+	}
+	return msgs
+}
+
+// extractJSONFromMarkdown 从可能包含 markdown 代码块的文本中提取 JSON
+func extractJSONFromMarkdown(content string) string {
+	// 尝试提取 ```json ... ``` 代码块
+	re := regexp.MustCompile("(?s)```(?:json)?\\s*([\\s\\S]*?)```")
+	if m := re.FindStringSubmatch(content); len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+	// 尝试提取第一个 { 到最后一个 } 之间的内容
+	start := strings.Index(content, "{")
+	end := strings.LastIndex(content, "}")
+	if start >= 0 && end > start {
+		return content[start : end+1]
+	}
+	return content
+}
+
+// isRetryableError 判断是否为可重试错误（网络超时、5xx 等）
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "temporary") ||
+		strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "500") ||
+		strings.Contains(msg, "502") ||
+		strings.Contains(msg, "503")
+}
+
+// isUnsupportedFormatError 判断是否为格式不支持错误
+func isUnsupportedFormatError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "response_format") ||
+		strings.Contains(msg, "json_schema") ||
+		strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "invalid") ||
+		strings.Contains(msg, "400")
 }
