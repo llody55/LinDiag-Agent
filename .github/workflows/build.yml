@@ -1,124 +1,106 @@
-name: Build
+name: Release
 
-# 在 main / develop 分支推送以及打 tag(v*) 时触发构建。
-# tag 触发会额外生成 Release 附件，便于直接发布版本产物。
 on:
   push:
-    branches:
-      - main
-      - develop
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
-  workflow_dispatch: # 支持手动触发，便于排查
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # 单个目标失败不影响其他目标继续构建
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            binary_name: lindiag-agent_amd64_linux
-          - goos: linux
-            goarch: arm64
-            binary_name: lindiag-agent_arm64_linux
-          - goos: windows
-            goarch: amd64
-            binary_name: lindiag-agent_amd64_windows.exe
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: windows
+            arch: amd64
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          cache: true
+          go-version: '1.24'
 
-      - name: Download dependencies
-        run: go mod download
+      - name: Install dependencies
+        run: |
+          go mod tidy
 
-      - name: Vet
-        # 静态检查，不阻塞发布但输出告警
-        continue-on-error: true
-        run: go vet ./...
-
-      - name: Build
+      - name: Build binary
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
         run: |
-          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-          COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          BINARY_NAME="lindiag-agent"
+          if [ "$GOOS" = "windows" ]; then
+            BINARY_NAME="lindiag-agent.exe"
+          fi
+
+          LDFLAGS="-s -w"
+          # Linux 静态链接，Windows 跳过 -extldflags
+          if [ "$GOOS" = "linux" ]; then
+            LDFLAGS="${LDFLAGS} -extldflags '-static'"
+          fi
+
+          VERSION=${GITHUB_REF_NAME}
+          COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          LDFLAGS="-s -w \
-            -X main.version=${VERSION} \
-            -X main.commit=${COMMIT} \
-            -X main.buildDate=${BUILD_DATE}"
-          # Windows 不支持 -extldflags "-static"，按平台区分
-          if [ "${{ matrix.goos }}" = "linux" ]; then
-            LDFLAGS="${LDFLAGS} -extldflags \"-static\""
-          fi
-          mkdir -p output
-          go build -a -trimpath -ldflags "${LDFLAGS}" \
-            -o output/${{ matrix.binary_name }} ./cmd/agent
+          LDFLAGS="${LDFLAGS} -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}"
 
-      - name: Verify binary
-        # Linux 目标验证可执行；Windows 目标只验证文件存在
-        run: |
-          ls -lh output/
-          if [ "${{ matrix.goos }}" = "linux" ]; then
-            file output/${{ matrix.binary_name }}
-            output/${{ matrix.binary_name }} 2>&1 | head -n 5 || true
+          CGO_ENABLED=0 go build \
+            -trimpath \
+            -ldflags="${LDFLAGS}" \
+            -o "${BINARY_NAME}" \
+            ./cmd/agent
+
+          RELEASE_NAME="lindiag-agent-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            mv "${BINARY_NAME}" "${RELEASE_NAME}.exe"
+            sha256sum "${RELEASE_NAME}.exe" > "${RELEASE_NAME}.exe.sha256"
+          else
+            mv "${BINARY_NAME}" "${RELEASE_NAME}"
+            sha256sum "${RELEASE_NAME}" > "${RELEASE_NAME}.sha256"
           fi
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.binary_name }}
-          path: output/${{ matrix.binary_name }}
-          if-no-files-found: error
-          retention-days: 30
+          name: lindiag-agent-${{ matrix.os }}-${{ matrix.arch }}
+          path: lindiag-agent-*
 
   release:
-    name: Release
-    needs: build
-    # 仅在打 tag 时创建 Release，分支推送只留 artifact
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # 创建 Release 需要
+    needs: build
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: release-assets
+          path: ./dist
           merge-multiple: true
 
-      - name: Create checksums
+      - name: Create combined checksums file
         run: |
-          cd release-assets
-          sha256sum * > checksums-sha256.txt
-          sha1sum * > checksums-sha1.txt
-          ls -laR
+          cd ./dist
+          cat *.sha256 > checksums.txt
 
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
           files: |
-            release-assets/*
+            ./dist/lindiag-agent-*
+            ./dist/checksums.txt
           body: |
             ## LinDiag-Agent ${{ github.ref_name }}
 
@@ -126,22 +108,17 @@ jobs:
 
             | 平台 | 文件 |
             |------|------|
-            | Linux amd64 | `lindiag-agent_amd64_linux` |
-            | Linux arm64 | `lindiag-agent_arm64_linux` |
-            | Windows amd64 | `lindiag-agent_amd64_windows.exe` |
+            | Linux amd64 | `lindiag-agent-linux-amd64` |
+            | Linux arm64 | `lindiag-agent-linux-arm64` |
+            | Windows amd64 | `lindiag-agent-windows-amd64.exe` |
 
             ### 校验
 
-            下载 `checksums-sha256.txt`，在同目录执行：
+            下载 `checksums.txt`，在同目录执行：
             ```bash
-            sha256sum -c checksums-sha256.txt --ignore-missing
-            ```
-
-            ### 用法
-
-            ```bash
-            chmod +x lindiag-agent_amd64_linux
-            ./lindiag-agent_amd64_linux
+            sha256sum -c checksums.txt --ignore-missing
             ```
 
             完整变更见 [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)。
+          draft: false
+          prerelease: false

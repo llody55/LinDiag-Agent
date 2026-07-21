@@ -1,6 +1,6 @@
 module github.com/LinDiag-Agent
 
-go 1.24.11
+go 1.24
 
 require (
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510

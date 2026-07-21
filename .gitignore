@@ -1,0 +1,20 @@
+# 构建产物
+/output/
+/lindiag
+/lindiag-agent
+/lindiag-agent_*
+*.exe
+
+# 历史记录与本地运行残留
+history_*.json
+*.log
+
+# IDE / 编辑器
+.trae/
+.idea/
+.vscode/
+*.swp
+
+# 操作系统杂项
+.DS_Store
+Thumbs.db
