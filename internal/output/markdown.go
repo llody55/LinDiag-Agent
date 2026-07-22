@@ -19,12 +19,16 @@ func RenderMarkdown(content string) string {
 
 		// 代码块开始/结束
 		if strings.HasPrefix(trimmed, "```") {
+			sep := boxH
+			if asciiMode {
+				sep = asciiBoxH
+			}
 			if inCodeBlock {
 				inCodeBlock = false
-				result.WriteString(Yellow + strings.Repeat("─", 60) + Reset + "\n")
+				result.WriteString(Yellow + strings.Repeat(sep, 60) + Reset + "\n")
 			} else {
 				inCodeBlock = true
-				result.WriteString(Yellow + strings.Repeat("─", 60) + Reset + "\n")
+				result.WriteString(Yellow + strings.Repeat(sep, 60) + Reset + "\n")
 			}
 			continue
 		}
@@ -44,17 +48,20 @@ func RenderMarkdown(content string) string {
 		// 标题渲染
 		if strings.HasPrefix(trimmed, "### ") {
 			title := strings.TrimPrefix(trimmed, "### ")
-			result.WriteString("\n" + Bold + Cyan + "▶ " + title + Reset + "\n")
+			mark := icon("▶", ">")
+			result.WriteString("\n" + Bold + Cyan + mark + " " + title + Reset + "\n")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "## ") {
 			title := strings.TrimPrefix(trimmed, "## ")
-			result.WriteString("\n" + Bold + Blue + "■ " + title + Reset + "\n")
+			mark := icon("■", "#")
+			result.WriteString("\n" + Bold + Blue + mark + " " + title + Reset + "\n")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "# ") {
 			title := strings.TrimPrefix(trimmed, "# ")
-			result.WriteString("\n" + Bold + Green + "● " + title + Reset + "\n")
+			mark := icon("●", "*")
+			result.WriteString("\n" + Bold + Green + mark + " " + title + Reset + "\n")
 			continue
 		}
 
@@ -62,7 +69,8 @@ func RenderMarkdown(content string) string {
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			item := strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* ")
 			rendered := renderInline(item)
-			result.WriteString("  " + Green + "•" + Reset + " " + rendered + "\n")
+			bullet := icon("•", "-")
+			result.WriteString("  " + Green + bullet + Reset + " " + rendered + "\n")
 			continue
 		}
 		if matched, _ := regexp.MatchString(`^\d+\.\s`, trimmed); matched {

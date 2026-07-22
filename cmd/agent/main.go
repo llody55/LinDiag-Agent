@@ -25,6 +25,29 @@ var (
 )
 
 func main() {
+	// 终端环境检测：在任何 output.* 调用之前执行，
+	// 判断是否需要 ASCII 降级 / 禁用颜色。
+	// 触发条件：非终端（重定向）；locale 非 UTF-8；Linux 原生控制台（TERM=linux）。
+	termEnv := output.DetectTerminalEnv()
+	output.SetTerminalEnv(termEnv)
+
+	// 在非 UTF-8 或 Linux 原生控制台环境下给出一次性提示，
+	// 帮助用户理解为何图标/边框变成 ASCII 形态。
+	// 提示本身使用纯 ASCII，确保在任何环境下可读。
+	if termEnv.NeedASCII && termEnv.IsTerminal {
+		fmt.Println("[LinDiag] Detected non-UTF-8 or Linux console environment.")
+		fmt.Println("[LinDiag] Switched to ASCII fallback mode for compatibility.")
+		if !termEnv.IsUTF8 && termEnv.Lang != "" {
+			fmt.Printf("[LinDiag] Your locale is %q; consider using a UTF-8 locale (e.g. C.UTF-8).\n", termEnv.Lang)
+		} else if termEnv.Lang == "" {
+			fmt.Println("[LinDiag] No locale (LANG/LC_ALL) is set; consider setting LANG=C.UTF-8.")
+		}
+		if termEnv.IsLinuxConsole {
+			fmt.Println("[LinDiag] Linux native console (TERM=linux) has no CJK font; ASCII mode enabled.")
+		}
+		fmt.Println()
+	}
+
 	output.InfoMessage(fmt.Sprintf("LinDiag-Agent %s (commit: %s, built: %s)", version, commit, buildDate))
 
 	// 初始化 LLM 模块

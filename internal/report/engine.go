@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LinDiag-Agent/internal/diagnosis"
 	"github.com/LinDiag-Agent/internal/output"
@@ -296,12 +297,12 @@ func GenerateMarkdownReport(filename string, data ReportData) {
 			sb.WriteString(fmt.Sprintf("### 步骤 %d：%s [%s]\n\n", i+1, rec.Command, status))
 			if rec.Output != "" {
 				sb.WriteString("```\n")
-				// 截断过长的输出
-				output := rec.Output
-				if len(output) > 2000 {
-					output = output[:2000] + "\n... (输出已截断)"
+				// 截断过长的输出（按 rune 边界截断，避免中文断裂乱码）
+				out := rec.Output
+				if len(out) > 2000 {
+					out = safeTruncate(out, 2000) + "\n... (输出已截断)"
 				}
-				sb.WriteString(output)
+				sb.WriteString(out)
 				sb.WriteString("\n```\n\n")
 			}
 		}
@@ -331,7 +332,7 @@ func GenerateMarkdownReport(filename string, data ReportData) {
 		sb.WriteString("```\n")
 		snap := data.SystemSnapshot
 		if len(snap) > 3000 {
-			snap = snap[:3000] + "\n... (快照已截断)"
+			snap = safeTruncate(snap, 3000) + "\n... (快照已截断)"
 		}
 		sb.WriteString(snap)
 		sb.WriteString("\n```\n\n")
@@ -412,11 +413,11 @@ code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-size: 13p
 			}
 			sb.WriteString(fmt.Sprintf("<h3>步骤 %d：%s <span class=\"%s\">[%s]</span></h3>\n", i+1, escapeHTML(rec.Command), cls, status))
 			if rec.Output != "" {
-				output := rec.Output
-				if len(output) > 2000 {
-					output = output[:2000] + "\n... (输出已截断)"
+				out := rec.Output
+				if len(out) > 2000 {
+					out = safeTruncate(out, 2000) + "\n... (输出已截断)"
 				}
-				sb.WriteString("<pre>" + escapeHTML(output) + "</pre>\n\n")
+				sb.WriteString("<pre>" + escapeHTML(out) + "</pre>\n\n")
 			}
 		}
 	}
@@ -444,7 +445,7 @@ code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-size: 13p
 		sb.WriteString("<h2>六、系统快照</h2>\n")
 		snap := data.SystemSnapshot
 		if len(snap) > 3000 {
-			snap = snap[:3000] + "\n... (快照已截断)"
+			snap = safeTruncate(snap, 3000) + "\n... (快照已截断)"
 		}
 		sb.WriteString("<pre>" + escapeHTML(snap) + "</pre>\n\n")
 	}
@@ -554,10 +555,24 @@ func truncateForPreview(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
 	if len(s) > maxLen {
-		return s[:maxLen] + "..."
+		return safeTruncate(s, maxLen) + "..."
 	}
 	if s == "" {
 		return "（无）"
 	}
 	return s
+}
+
+// safeTruncate 按字节上限截断字符串，确保不在 UTF-8 多字节字符中间断裂。
+// 用于报告内容截断（命令输出、系统快照等），避免产生半个字符的乱码字节。
+func safeTruncate(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	// 向前回退到完整 rune 边界
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
