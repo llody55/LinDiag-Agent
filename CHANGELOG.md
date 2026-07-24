@@ -7,6 +7,131 @@
 
 ---
 
+## [4.1.0] — 2026-07-24
+
+v4.1 是 Windows 平台支持版本：从"仅能编译、功能完全不可用"升级到"Windows 端功能
+完整可用"，同时对不支持中文的 Linux 系统做了 ASCII 降级兼容。本次变更覆盖跨平台
+分流、诊断命令集、规则引擎、安全分析器、进程管理、路径规范、报告引擎七个维度。
+
+### 新增
+
+#### 跨平台 Shell 分流
+
+- **平台函数抽象**：`newShellCommand` / `newShellCommandContext` / `getIPAddress` /
+  `isBackgroundCommand` / `isShellAvailable` / `snapshotPromptPrefix` 按 GOOS 分流
+  - Unix：`sh -c` + `hostname -I` + `&` 后台识别
+  - Windows：`powershell -NoProfile -NonInteractive -Command` + `Get-NetIPAddress`
+- **快照前缀分流**：`snapshotPromptPrefix()` 返回平台提示符（Linux: `$ `，
+  Windows: `> `），所有下游解析器（`extractCommandOutput` / `extractAfterCommand`）
+  同时支持两种前缀
+- **环境检测分流**：`probeDocker` / `probeKubernetes` / `probeHelmNoAbn` /
+  `probeNaliNoAbn` / `prometheusDeployed` / `checkCmd` / `runOutput` 按平台实现
+  - Unix：`which` + `sh -c`
+  - Windows：`Get-Command` + `powershell -Command`
+
+#### Windows 诊断命令集
+
+- **基础快照命令**：`Get-CimInstance Win32_OperatingSystem`（OS 版本/运行时间/
+  内存） / `Win32_ComputerSystem`（计算机信息） / `Win32_Processor`（CPU） /
+  `$PSVersionTable`（PowerShell 版本）
+- **故障诊断命令映射**：
+  - `uptime` → `Get-CimInstance Win32_OperatingSystem | Select LastBootUpTime`
+  - `free -h` → `Get-CimInstance Win32_OperatingSystem | Select FreePhysicalMemory, TotalVisibleMemorySize`
+  - `df -h` → `Get-Volume | Where { $_.DriveLetter }`
+  - `ps` → `Get-Process | Sort-Object WS -Descending | Select -First 15`
+  - `dmesg` → `Get-EventLog -LogName System -Newest 30`
+  - 僵尸进程 → `Get-Process | Where { $_.Responding -eq $false }`
+  - `systemctl --failed` → `Get-Service | Where { Status=Stopped -and StartType=Automatic }`
+- **深度诊断追加**：`Get-CimInstance Win32_PnPSignedDriver`（驱动） /
+  `Get-NetTCPConnection | Group State`（连接） / `Get-NetRoute`（路由） /
+  `Get-NetAdapterStatistics`（网卡） / `Get-Counter`（性能计数器）
+- **服务状态查询**：`Get-Service -Name '<svc>' | Select Name, Status, StartType`
+
+#### Windows LLM 提示词
+
+- Windows 版 SystemPrompt 明确要求 PowerShell 命令，禁止生成 Linux 命令
+  （ps/top/df/free/systemctl/cat /proc 等）
+- 快照数据引用要求适配 Windows cmdlet 输出字段
+
+#### Windows 规则引擎（5 条）
+
+- `winMemPressureRule`：解析 `FreePhysicalMemory` / `TotalVisibleMemorySize` /
+  `FreeVirtualMemory` / `TotalVirtualMemorySize`（内存+页面文件压力）
+- `winDiskCapacityRule`：解析 `Get-Volume` 的 `SizeRemaining` / `Size`
+- `winUnresponsiveProcessRule`：检测 `Responding=False` 进程（替代僵尸进程）
+- `winStoppedServicesRule`：检测自动启动但已停止的服务（替代 systemctl --failed）
+- `winCriticalEventRule`：统计 `Get-EventLog` 中 Error/Critical 事件（替代 dmesg OOM）
+
+#### Windows 安全分析器扩展
+
+- **白名单**：45 个只读 cmdlet（Get-* 系列）+ Windows 外部工具
+  （ipconfig/systeminfo/tasklist/whoami 等）
+- **危险命令**：20 个 Critical 级命令（Remove-Item/Stop-Computer/Clear-Disk/
+  Format-Volume/Stop-Service/Stop-Process 等）
+- **中等风险**：20 个变更类 cmdlet（Set-*/New-*/Start-*/Copy-Item 等）
+- **危险模式正则**：7 个 Windows 专属模式（Remove-Item 递归删根盘符/format C:/
+  diskpart/Stop-Computer/Clear-Disk 等）
+- **Shell 递归分析**：`powershell -Command` / `pwsh -Command` / `cmd /c` 识别并
+  递归分析子命令
+- **重定向清理**：`hasWriteRedirect` 兼容 Windows `NUL` / `$null` 空目标
+
+#### Windows 进程组管理
+
+- `setProcessGroup`：`CREATE_NEW_PROCESS_GROUP` 创建新进程组
+- `killProcessGroup`：`taskkill /T /F /PID` 递归终止进程树
+  （等效 Linux `kill(-pgid, SIGKILL)`）
+
+#### Windows 路径规范
+
+- ConfigDir：`%APPDATA%\lindiag\`（Roaming，跨机器漫游配置）
+- DataDir：`%LOCALAPPDATA%\lindiag\`（Local，机器本地数据）
+
+#### 报告引擎平台适配
+
+- `extractOSInfo`：自动检测平台，Linux 用 `PRETTY_NAME=`，Windows 用 `Caption` + `Version`
+- `extractUptimeInfo`：Linux 用 `uptime`，Windows 用 `LastBootUpTime`
+- `extractKernelVer`：Linux 用 `uname -a`，Windows 用 `Caption` + `BuildNumber`
+
+#### ASCII 降级（不支持中文的 Linux 系统）
+
+- **终端检测**：`DetectTerminalEnv` 检测 `LANG` / `LC_*` / `TERM` / `NO_COLOR`
+- **图标降级**：`icon()` 在非 UTF-8 终端用 ASCII 字符替代 emoji
+- **制表符降级**：`ascii_fallback.go` 将 Unicode 制表符映射为 `+-|` ASCII 字符
+- **安全截断**：`displayWidth` / `runeWidth` / `truncateByWidth` 按显示宽度截断
+- **报告截断**：`safeTruncate` 按 rune 边界截断
+
+### 变更
+
+- **规则引擎拆分**：`rules_builtin.go` 拆分为公共工具函数 + `rules_builtin_linux.go`
+  （8 条 Linux 规则） + `rules_builtin_windows.go`（5 条 Windows 规则），
+  `NewEngine()` 改为调用平台分流的 `newBuiltinRules()`
+- **mode.go 拆分**：`mode_linux.go` / `mode_windows.go` 各自注册诊断模式，
+  `mode.go` 仅保留平台无关的 `outputFormatRule` 常量
+- **snapshot.go 拆分**：`snapshot_basics_unix.go` / `snapshot_basics_windows.go`
+  各自提供 `basicSnapshotCmds()`
+- **paths.go 拆分**：`paths_unix.go` / `paths_windows.go` 各自提供
+  `xdgConfigHome()` / `xdgDataHome()` / `homeDir()`
+- **executor.go**：所有 `exec.Command("sh","-c",cmd)` 替换为 `newShellCommand(cmd)`，
+  `GetHostname` 改用 `os.Hostname()`，`GetIPAddress` 改用 `getIPAddress()`
+- **engine.go `extractCommandOutput`**：同时支持 `$ ` 和 `> ` 前缀的快照格式
+
+### 修复
+
+- 修复 Windows 下 `sh -c` 不可用导致全部命令执行失败
+- 修复 Windows 下进程组管理为空实现导致超时无法杀子进程
+- 修复 Windows 下路径使用 `~/.config/lindiag/` 导致配置/历史找不到
+- 修复 Windows 报告中 OSInfo/KernelVer/UptimeInfo 恒为"未知"
+- 修复快照格式 `$ ` 前缀硬编码，Windows 适配分支成为死代码
+
+### 已知限制
+
+- Windows 未实现 `Get-Counter '\Processor(_Total)\% Processor Time'` 的 CPU 负载规则
+  （PowerShell 性能计数器采集较慢，暂用进程 TOP 替代）
+- Windows 安全分析器未覆盖 `reg.exe`（注册表命令行工具）的子命令分级
+- 以下问题从 v4.0 继承，记录在 [ROADMAP.md](ROADMAP.md)：
+
+---
+
 ## [4.0.0] — 2026-07-21
 
 v4.0 是继 v3.x 单文件架构重构之后的一次大版本演进：从"可用的 AI 诊断脚本"
@@ -121,7 +246,7 @@ v4.0 是继 v3.x 单文件架构重构之后的一次大版本演进：从"可�
 - `platform.ExecuteCommand` 用裸 `sh -c`，本身不做安全校验
 - 全项目无结构化日志(仍用 `fmt.Println`)
 - 测试覆盖约 0%(仅 4 个 `_test.go`)
-- Windows 下 `sh -c` 不可用 + Job Object 未实现，跨平台不完整
+- ~~Windows 下 `sh -c` 不可用 + Job Object 未实现，跨平台不完整~~（v4.1.0 已修复）
 - `design-doc.md` 与当前代码存在多处不一致(历史稿)
 
 ---

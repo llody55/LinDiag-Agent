@@ -72,14 +72,14 @@ func ExtractReportData(history []diagnosis.Message) ReportData {
 			switch kind {
 			case diagnosis.KindSystemSnapshot:
 				data.SystemSnapshot = extractSnapshotContent(content)
-				data.OSInfo = extractField(content, "PRETTY_NAME=")
-				data.KernelVer = extractAfterCommand(content, "uname -a")
-				data.UptimeInfo = extractAfterCommand(content, "uptime")
+				data.OSInfo = extractOSInfo(content)
+				// 平台分流：Linux 用 uptime，Windows 用 Get-CimInstance 的 LastBootUpTime
+				data.UptimeInfo = extractUptimeInfo(content)
+				// 提取内核版本：Linux 用 uname -a，Windows 用 Caption/BuildNumber
+				data.KernelVer = extractKernelVer(content)
 			case diagnosis.KindCommandResult:
-				rec := parseCommandResult(content)
-				if rec.Command != "" {
-					data.DiagnosticRecords = append(data.DiagnosticRecords, rec)
-				}
+				records := parseCommandResults(content)
+				data.DiagnosticRecords = append(data.DiagnosticRecords, records...)
 			case diagnosis.KindUserRequirement:
 				data.UserProblem = extractUserProblem(content)
 			default:
@@ -100,6 +100,11 @@ func ExtractReportData(history []diagnosis.Message) ReportData {
 				data.Issues = diagnosis.MergeByTitle(data.Issues, issues)
 			}
 			if isFinal {
+				// 多轮诊断中可能出现多个 IsFinal 响应：把前一轮最终结论降级为
+				// 中间分析，避免被覆盖丢失；最新结论作为 FinalConclusion。
+				if data.FinalConclusion != "" {
+					data.IntermediateAnalysis = append(data.IntermediateAnalysis, data.FinalConclusion)
+				}
 				data.FinalConclusion = analysis
 			} else {
 				data.IntermediateAnalysis = append(data.IntermediateAnalysis, analysis)
@@ -152,7 +157,11 @@ func extractUserProblem(content string) string {
 	return strings.TrimSpace(content)
 }
 
-// extractField 从文本中提取指定字段
+// extractField 从文本中提取指定字段。
+// 支持 Linux /etc/os-release 格式（`KEY=value` 或 `KEY="value"`）。
+// 注意：此函数按 `prefix` 的第一次出现提取，不区分命令文本与输出，
+// 因此**不适合** PowerShell 快照（命令中会包含字段名如 `Select-Object Caption`）。
+// Windows 快照字段提取请用 extractPSField。
 func extractField(content, prefix string) string {
 	idx := strings.Index(content, prefix)
 	if idx == -1 {
@@ -179,7 +188,79 @@ func extractField(content, prefix string) string {
 	return strings.TrimSpace(content[start : start+end])
 }
 
-// extractAfterCommand 提取命令后的第一行输出
+// psFieldRe 匹配 PowerShell Format-List 输出中的 `字段名 : 值` 或 `字段名     : 值` 行。
+// 要求字段名在行首，后接若干空格、冒号、空格、值——区分命令文本中的
+// `Select-Object Caption, Version` 与输出中的 `Caption      : Microsoft Windows 10 Pro`。
+var psFieldRe = regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*\s*:\s+(.+)$`)
+
+// extractPSField 从 PowerShell Format-List 输出中提取指定字段的值。
+// 仅匹配行首 `FieldName : value` 格式，跳过命令文本中出现的字段名。
+// 例如对 `Caption      : Microsoft Windows 10 Pro` 返回 `Microsoft Windows 10 Pro`。
+func extractPSField(content, fieldName string) string {
+	// 限定字段名为行首，后接空格与冒号
+	pattern := `(?m)^` + regexp.QuoteMeta(fieldName) + `\s*:\s+(.+)$`
+	re := regexp.MustCompile(pattern)
+	m := re.FindStringSubmatch(content)
+	if m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+// extractOSInfo 提取操作系统信息。
+// 根据内容特征自动判断平台：Linux 用 /etc/os-release 的 PRETTY_NAME=，Windows 用 Caption。
+func extractOSInfo(content string) string {
+	// 检测是否是 Windows 快照
+	if strings.Contains(content, "Win32_OperatingSystem") {
+		// Windows: 提取 Caption（如 "Microsoft Windows 10 Pro"）+ Version
+		caption := extractPSField(content, "Caption")
+		version := extractPSField(content, "Version")
+		if caption != "" && caption != "未知" {
+			if version != "" && version != "未知" {
+				return caption + " " + version
+			}
+			return caption
+		}
+	}
+	// Linux: 从 /etc/os-release 提取 PRETTY_NAME=
+	return extractField(content, "PRETTY_NAME=")
+}
+
+// extractUptimeInfo 提取系统运行时长信息。
+// 根据内容特征自动判断平台（Linux: uptime, Windows: Get-CimInstance 的 LastBootUpTime）。
+func extractUptimeInfo(content string) string {
+	// 检测是否是 Windows 快照：Windows 快照内容会包含 Win32_OperatingSystem 或 LastBootUpTime
+	if strings.Contains(content, "Win32_OperatingSystem") || strings.Contains(content, "LastBootUpTime") {
+		bootTime := extractPSField(content, "LastBootUpTime")
+		if bootTime != "" && bootTime != "未知" {
+			return "系统上次启动时间: " + bootTime
+		}
+	}
+	// Linux 默认使用 uptime
+	return extractAfterCommand(content, "uptime")
+}
+
+// extractKernelVer 提取内核版本信息。
+// 根据内容特征自动判断平台：Linux 用 uname -a，Windows 用 Caption/BuildNumber。
+func extractKernelVer(content string) string {
+	// 检测是否是 Windows 快照
+	if strings.Contains(content, "Win32_OperatingSystem") {
+		// Windows: 提取 Caption 和 BuildNumber
+		caption := extractPSField(content, "Caption")
+		build := extractPSField(content, "BuildNumber")
+		if caption != "" && caption != "未知" {
+			if build != "" && build != "未知" {
+				return caption + " (Build " + build + ")"
+			}
+			return caption
+		}
+	}
+	// Linux 默认使用 uname -a
+	return extractAfterCommand(content, "uname -a")
+}
+
+// extractAfterCommand 提取命令后的第一行输出。
+// 支持 Linux 风格的 `$ ` 前缀和 Windows 风格的 `> ` 前缀。
 func extractAfterCommand(content, cmd string) string {
 	idx := strings.Index(content, cmd)
 	if idx == -1 {
@@ -189,39 +270,56 @@ func extractAfterCommand(content, cmd string) string {
 	lines := strings.Split(after, "\n")
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "$") {
+		// 跳过空行和命令提示符前缀（Linux: $, Windows: >）
+		if trimmed != "" && !strings.HasPrefix(trimmed, "$") && !strings.HasPrefix(trimmed, ">") {
 			return trimmed
 		}
 	}
 	return "未知"
 }
 
-// parseCommandResult 解析命令执行结果消息
-func parseCommandResult(content string) DiagnosticRecord {
-	rec := DiagnosticRecord{}
+// parseCommandResult 解析命令执行结果消息，返回所有包含的记录。
+// 一条 KindCommandResult 消息可能包含多条结果（BuildHistoryMessage 会把
+// 一轮中的所有命令结果打包到一条消息中），因此返回切片而非单条。
+// 格式："执行结果 (command):\noutput" 或 "命令执行失败 (command):\noutput"
+func parseCommandResults(content string) []DiagnosticRecord {
 	lines := strings.Split(content, "\n")
+	var records []DiagnosticRecord
 
-	// 格式1: "执行结果 (command):\noutput"
-	// 格式2: "命令执行失败 (command):\noutput"
-	for i, line := range lines {
-		if strings.HasPrefix(line, "执行结果 (") || strings.HasPrefix(line, "命令执行失败 (") {
-			prefix := "执行结果 ("
-			isFail := false
-			if strings.HasPrefix(line, "命令执行失败 (") {
-				prefix = "命令执行失败 ("
-				isFail = true
-			}
-			cmdStr := strings.TrimSuffix(strings.TrimPrefix(line, prefix), "):")
-			rec.Command = cmdStr
-			rec.Success = !isFail
-			// 剩余行是输出
-			if i+1 < len(lines) {
-				rec.Output = strings.Join(lines[i+1:], "\n")
-			}
-			break
+	// 支持两种前缀
+	const successPrefix = "执行结果 ("
+	const failPrefix = "命令执行失败 ("
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		isFail := false
+		var prefix string
+		switch {
+		case strings.HasPrefix(line, successPrefix):
+			prefix = successPrefix
+		case strings.HasPrefix(line, failPrefix):
+			prefix = failPrefix
+			isFail = true
+		default:
+			continue
 		}
+		cmdStr := strings.TrimSuffix(strings.TrimPrefix(line, prefix), "):")
+		rec := DiagnosticRecord{
+			Command: cmdStr,
+			Success: !isFail,
+		}
+		// 输出：从下一行开始，直到遇到下一个 "执行结果 (" / "命令执行失败 (" 或文件末尾
+		var outLines []string
+		for j := i + 1; j < len(lines); j++ {
+			if strings.HasPrefix(lines[j], successPrefix) || strings.HasPrefix(lines[j], failPrefix) {
+				break
+			}
+			outLines = append(outLines, lines[j])
+		}
+		rec.Output = strings.TrimSpace(strings.Join(outLines, "\n"))
+		records = append(records, rec)
 	}
-	return rec
+	return records
 }
 
 // extractAnalysisFromResponse 从 assistant 消息中提取分析

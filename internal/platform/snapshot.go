@@ -16,13 +16,8 @@ func GetSnapshot(cmds []string) string {
 	var b strings.Builder
 	b.WriteString("=== 系统初始快照 ===\n")
 
-	// 先收集最基础的系统信息
-	basicCmds := []string{
-		"uname -a",
-		"cat /etc/os-release 2>/dev/null || cat /etc/redhat-release 2>/dev/null || cat /etc/debian_version 2>/dev/null || echo 'OS info not found'",
-		"lsb_release -a 2>/dev/null || echo 'lsb_release not available'",
-		"arch",
-	}
+	// 先收集最基础的系统信息（平台特定命令）
+	basicCmds := basicSnapshotCmds()
 
 	all := make([]string, 0, len(basicCmds)+len(cmds))
 	all = append(all, basicCmds...)
@@ -47,10 +42,12 @@ func GetSnapshot(cmds []string) string {
 
 // runSnapshotCmd 执行单条快照命令并返回格式化结果。
 // 失败时输出明确标注的 [采集失败]，而非静默空输出。
+// 命令前缀由 snapshotPromptPrefix() 平台函数返回（Linux: "$ ", Windows: "> "）。
 func runSnapshotCmd(cmd string, timeoutSeconds int) string {
 	out, err := ExecuteCommandWithTimeout(cmd, timeoutSeconds)
+	prefix := snapshotPromptPrefix()
 	if err != nil {
-		return fmt.Sprintf("$ %s\n[采集失败: %v]\n%s\n\n", cmd, err, out)
+		return fmt.Sprintf("%s%s\n[采集失败: %v]\n%s\n\n", prefix, cmd, err, out)
 	}
-	return fmt.Sprintf("$ %s\n%s\n\n", cmd, out)
+	return fmt.Sprintf("%s%s\n%s\n\n", prefix, cmd, out)
 }

@@ -52,6 +52,7 @@ var safeCommands = []string{
 	"git", "env", "printenv", "lscpu", "lsof", "vmstat", "iostat", "sar",
 	"nproc", "awk", "sed", "sort", "uniq", "tr", "cut", "column",
 	"nmap", "tcpdump", "strace", "ltrace", "perf", "bpftool",
+	// === Windows 见 safety_windows.go 的 winSafeCommands 补充 ===
 }
 
 // subCommandRisk 多义工具的子命令分级表。
@@ -621,6 +622,7 @@ var dangerousCommands = map[string]string{
 	"setcap":  "设置文件 capabilities，改变程序权限边界",
 	"setfacl": "设置文件 ACL，改变访问权限",
 	"chacl":   "更改文件 ACL，改变访问权限",
+	// === Windows 见 safety_windows.go 的 winDangerousCommands 补充 ===
 }
 
 // mediumRiskCommandsMap 方便查找
@@ -646,6 +648,18 @@ var riskyPatterns = []struct {
 	{regexp.MustCompile(`chown\s+\S+:\S+\s+/(\s|$)`), "更改根目录所有权"},
 	{regexp.MustCompile(`:\(\)\s*\{`), "fork bomb"},
 	{regexp.MustCompile(`>\s*/dev/sd`), "直接写入磁盘设备"},
+	// === Windows 危险模式 ===
+	// Remove-Item -Recurse -Force C:\ 递归强制删除（PowerShell 删根）
+	{regexp.MustCompile(`(?i)Remove-Item\s+.*-Recurse.*-Force.*:\\`), "递归强制删除根盘符"},
+	{regexp.MustCompile(`(?i)Remove-Item\s+.*-Force.*-Recurse.*:\\`), "递归强制删除根盘符"},
+	// format C: 格式化盘符
+	{regexp.MustCompile(`(?i)format\s+[A-Z]:`), "格式化磁盘卷"},
+	// diskpart /s 可改分区表（危险但非正则可精确匹配，保守拦截裸 diskpart 调用）
+	{regexp.MustCompile(`(?i)\bdiskpart\b`), "磁盘分区管理工具，可改分区表"},
+	// Shutdown/Restart-Computer 关机重启
+	{regexp.MustCompile(`(?i)(Stop-Computer|Restart-Computer|shutdown\s+/s|shutdown\s+/r)`), "关机或重启系统"},
+	// Clear-Disk / Clear-RecycleBin 危险
+	{regexp.MustCompile(`(?i)Clear-Disk`), "清除磁盘数据"},
 }
 
 // 命令注入向量：这些命令可以执行任意子命令，需递归分析其参数
@@ -653,6 +667,10 @@ var commandExecutors = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "dash": true, "ash": true,
 	"exec": true, "eval": true, "source": true, ".": true,
 	"xargs": true, "su": true, "sudo": true,
+	// Windows: PowerShell / cmd / pwsh 启动器
+	"powershell": true, "pwsh": true, "cmd": true,
+	// Windows cmd 内置命令注入：cmd /c 和 PowerShell -Command 可执行任意子命令，
+	// 由 analyzeCommandExecutor 的 Windows 扩展识别 -Command / /c 参数。
 }
 
 // commandDescriptions 命令描述
@@ -1128,7 +1146,7 @@ func analyzeToolSubCommand(name string, parts []string, table struct {
 
 // analyzeCommandExecutor 分析 sh -c / bash -c / xargs / sudo 等命令执行器
 func (a *CommandAnalyzer) analyzeCommandExecutor(name string, parts []string, fullCmd string) *CommandInfo {
-	// 提取 -c 参数后的子命令
+	// 找到 -c 后的参数
 	if name == "sh" || name == "bash" || name == "zsh" || name == "dash" || name == "ash" {
 		// 找到 -c 后的参数
 		for i := 1; i < len(parts); i++ {
@@ -1147,6 +1165,29 @@ func (a *CommandAnalyzer) analyzeCommandExecutor(name string, parts []string, fu
 			}
 		}
 		// 无 -c 的 shell 调用，High — 可从管道接收并执行任意命令
+		return &CommandInfo{
+			RiskLevel:   RiskLevelHigh,
+			Reason:      name + " 启动子 shell，可执行任意命令",
+			Explanation: "启动新的 shell 进程，可能从管道或输入执行任意命令",
+		}
+	}
+
+	// Windows shell 启动器：powershell / pwsh / cmd
+	// - powershell -Command <cmd> / -c <cmd>  → 递归分析子命令
+	// - cmd /c <cmd>                          → 递归分析子命令
+	if name == "powershell" || name == "pwsh" || name == "cmd" {
+		// powershell/pwsh 支持 -Command/-c；cmd 支持 /c（大小写不敏感）
+		for i := 1; i < len(parts); i++ {
+			arg := parts[i]
+			lowerArg := strings.ToLower(arg)
+			if (arg == "-Command" || arg == "-c") && i+1 < len(parts) {
+				return a.analyzeWindowsShellChild(name, parts[i+1:])
+			}
+			if lowerArg == "/c" && i+1 < len(parts) {
+				return a.analyzeWindowsShellChild(name, parts[i+1:])
+			}
+		}
+		// 无 -Command / /c 的 shell 调用，High — 可从管道接收并执行任意命令
 		return &CommandInfo{
 			RiskLevel:   RiskLevelHigh,
 			Reason:      name + " 启动子 shell，可执行任意命令",
@@ -1189,6 +1230,31 @@ func (a *CommandAnalyzer) analyzeCommandExecutor(name string, parts []string, fu
 	}
 }
 
+// analyzeWindowsShellChild 分析 PowerShell -Command / cmd /c 后的子命令字符串。
+// parts 是 -Command / /c 之后的全部参数，可能为多段（被 shlex 拆分的引号内容）。
+func (a *CommandAnalyzer) analyzeWindowsShellChild(name string, parts []string) *CommandInfo {
+	if len(parts) == 0 {
+		return &CommandInfo{
+			RiskLevel:   RiskLevelMedium,
+			Reason:      name + " -Command 无内容",
+			Explanation: "启动 shell 但未指定要执行的命令",
+		}
+	}
+	// 子命令可能被 shlex 拆成多段（原本是引号包裹的单字符串），重新拼接后递归分析
+	subCmd := strings.Join(parts, " ")
+	subInfo := a.AnalyzeCommand(subCmd)
+	// 命令执行器本身提升一级风险（绕过了直接调用）
+	risk := subInfo.RiskLevel
+	if risk < RiskLevelMedium {
+		risk = RiskLevelMedium
+	}
+	return &CommandInfo{
+		RiskLevel:   risk,
+		Reason:      fmt.Sprintf("%s -Command 执行子命令: %s", name, subInfo.Reason),
+		Explanation: subInfo.Explanation,
+	}
+}
+
 // analyzeFindExec 分析 find -exec 中的操作
 func (a *CommandAnalyzer) analyzeFindExec(cmd string) *CommandInfo {
 	dangerousInExec := []string{"rm", "mv", "chmod", "chown", "dd", "sh", "bash"}
@@ -1210,9 +1276,14 @@ func (a *CommandAnalyzer) analyzeFindExec(cmd string) *CommandInfo {
 //   - 2>/dev/null / 2>&1（stderr 丢弃或合并，不写文件）
 //   - > /dev/null / >> /dev/null（输出丢弃，不写文件）
 //   - < file（输入重定向，不写文件）
+//   - Windows: 2>NUL / >NUL / $null 同理丢弃，不写文件
 func hasWriteRedirect(cmd string) bool {
-	// 移除所有 /dev/null 重定向（这些是丢弃输出，不写文件）
+	// 移除所有 null 设备重定向（Linux /dev/null 和 Windows NUL，均为丢弃输出不写文件）
 	cleaned := strings.ReplaceAll(cmd, "/dev/null", "")
+	// Windows NUL 设备（大小写不敏感：NUL / nul）
+	cleaned = regexp.MustCompile(`(?i)\bNUL\b`).ReplaceAllString(cleaned, "")
+	// PowerShell $null（输出丢弃）
+	cleaned = strings.ReplaceAll(cleaned, "$null", "")
 	// 移除输入重定向 < file
 	reInput := regexp.MustCompile(`<\s*\S+`)
 	cleaned = reInput.ReplaceAllString(cleaned, "")

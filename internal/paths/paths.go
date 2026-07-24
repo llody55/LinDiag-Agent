@@ -2,22 +2,19 @@
 //
 // 设计原则（Phase 3 Task 9）：
 //
-//  1. 遵循 XDG Base Directory Specification：
-//     - 配置文件走 $XDG_CONFIG_HOME/lindiag/（默认 ~/.config/lindiag/）
-//     - 数据文件走 $XDG_DATA_HOME/lindiag/（默认 ~/.local/share/lindiag/）
-//     这样支持无侵入的多用户/容器场景，避免历史/报告散落在 CWD。
+//  1. 遵循平台规范路径：
+//     Linux/macOS: XDG Base Directory Specification
+//       - 配置文件走 $XDG_CONFIG_HOME/lindiag/（默认 ~/.config/lindiag/）
+//       - 数据文件走 $XDG_DATA_HOME/lindiag/（默认 ~/.local/share/lindiag/）
+//     Windows: Known Folder 规范
+//       - 配置文件走 %APPDATA%\lindiag\（如 C:\Users\<user>\AppData\Roaming\lindiag\）
+//       - 数据文件走 %LOCALAPPDATA%\lindiag\（如 C:\Users\<user>\AppData\Local\lindiag\）
 //
-//  2. 所有路径在此处集中计算，其他包不得再写死 ~/.config/lindiag
-//     或硬编码 CWD 相对路径（user_prefs.json / whitelist.txt / rules.txt /
-//     history_*.json / report_*.md 等）。新需求在这里加一个 getter，
-//     消费方调用此处函数。
+//  2. 所有路径在此处集中计算，其他包不得再写死路径硬编码。
 //
 //  3. Ensure* 函数负责创建目录（含父级），调用方在写入前调用一次。
-//     读取端不需要 Ensure，找不到文件就走旧回退逻辑。
 //
-//  4. 用户在命令行显式传入的路径（./lindiag-agent load <file> /
-//     ./lindiag-agent report <file> <fmt>）保持原样透传，不做路径拼接，
-//     以便用户能访问任意位置的历史文件（包括旧 CWD 文件）。
+//  4. 用户在命令行显式传入的路径保持原样透传，不做路径拼接。
 package paths
 
 import (
@@ -26,17 +23,16 @@ import (
 	"path/filepath"
 )
 
-// ConfigDir 返回存放配置文件的根目录：$XDG_CONFIG_HOME/lindiag。
-//
-// 缺省回退到 $HOME/.config/lindiag。HOME 也取不到时回退到相对目录
-// ".config/lindiag"（罕见；主要在裸容器/无 HOME 的测试场景出现）。
+// ConfigDir 返回存放配置文件的根目录。
+// Linux/macOS: $XDG_CONFIG_HOME/lindiag
+// Windows: %APPDATA%\lindiag
 func ConfigDir() string {
 	return filepath.Join(xdgConfigHome(), "lindiag")
 }
 
-// DataDir 返回存放数据文件（历史/报告）的根目录：$XDG_DATA_HOME/lindiag。
-//
-// 缺省回退到 $HOME/.local/share/lindiag。
+// DataDir 返回存放数据文件（历史/报告）的根目录。
+// Linux/macOS: $XDG_DATA_HOME/lindiag
+// Windows: %LOCALAPPDATA%\lindiag
 func DataDir() string {
 	return filepath.Join(xdgDataHome(), "lindiag")
 }
@@ -72,29 +68,3 @@ func EnsureConfigDir() error { return os.MkdirAll(ConfigDir(), 0755) }
 // EnsureDataDir 确保数据目录存在（含所有父级，权限 0755）。
 // 供 Session 落盘历史 / Report 写入文件前调用。
 func EnsureDataDir() error { return os.MkdirAll(DataDir(), 0755) }
-
-// xdgConfigHome 解析 $XDG_CONFIG_HOME；未设置时回退到 $HOME/.config。
-func xdgConfigHome() string {
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return v
-	}
-	return filepath.Join(homeDir(), ".config")
-}
-
-// xdgDataHome 解析 $XDG_DATA_HOME；未设置时回退到 $HOME/.local/share。
-func xdgDataHome() string {
-	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return v
-	}
-	return filepath.Join(homeDir(), ".local", "share")
-}
-
-// homeDir 解析 $HOME；取不到返回空串，由调用方决定如何处理。
-// 优先用 os.UserHomeDir() 而非 os.Getenv("HOME")：
-// 前者在某些环境（如 systemd 服务）会自动补齐，且跨平台行为更稳定。
-func homeDir() string {
-	if h, err := os.UserHomeDir(); err == nil && h != "" {
-		return h
-	}
-	return os.Getenv("HOME")
-}

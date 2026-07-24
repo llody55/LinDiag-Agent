@@ -1,7 +1,13 @@
 # Roadmap
 
 本文件记录 LinDiag-Agent 已识别但尚未在当前版本解决的问题，按优先级排序。
-4.0 发版后将在后续版本(4.1+ 逐步完善)。问题来源：v4.0 发布前的全量架构与安全审查。
+v4.0 发版后已在 v4.0 / v4.1 逐步完善。问题来源：v4.0 发布前的全量架构与安全审查。
+
+v4.1.0 已解决的条目：
+- ~~14. Windows 跨平台不可用~~（已实现 shell 分流、PowerShell 命令集、
+  Windows 规则引擎、安全分析器、进程组管理、路径规范）
+- ~~v4.0 已知限制中的 "Windows 下 sh -c 不可用 + Job Object 未实现，跨平台不完整"~~
+  （已解决，详见 [CHANGELOG.md](CHANGELOG.md) v4.1.0）
 
 优先级定义：
 - **P0**：影响安全或稳定性，发版后应优先修复
@@ -131,14 +137,16 @@
 - **问题**：循环开头不检查 `s.ctx.Err()`，SIGINT 后卡在 `reader.ReadString`。
 - **方案**：循环开头 `if s.ctx.Err() != nil { return "", actionExit }`。
 
-### 14. Windows 跨平台不可用
+### 14. ~~Windows 跨平台不可用~~ — ✅ v4.1.0 已解决
 
-- **位置**：[internal/platform/executor.go](internal/platform/executor.go) L40 /
-  [internal/platform/process_windows.go](internal/platform/process_windows.go) L8-16
-- **问题**：executor.go 用 `sh -c`，Windows 默认无 sh；`setProcessGroup`/`killProcessGroup`
+- **原位置**：[internal/platform/executor.go](internal/platform/executor.go) /
+  [internal/platform/process_windows.go](internal/platform/process_windows.go)
+- **原问题**：executor.go 用 `sh -c`，Windows 默认无 sh；`setProcessGroup`/`killProcessGroup`
   是空实现，Job Object 未实现。`GetHostname`/`GetIPAddress` 用 Linux 语法。
-- **方案**：shell 按 GOOS 分流(unix 用 sh，windows 用 `cmd.exe /c`)；实现
-  Windows Job Object；`GetHostname` 用 `os.Hostname()`，IP 获取按平台分流。
+- **解决**：v4.1.0 实现 shell 按 GOOS 分流（Unix: `sh -c`，Windows: `powershell -NoProfile
+  -NonInteractive -Command`）；Windows 进程组用 `CREATE_NEW_PROCESS_GROUP` +
+  `taskkill /T /F /PID`；`GetHostname` 改用 `os.Hostname()`，`GetIPAddress` 按平台分流。
+  详见 [CHANGELOG.md](CHANGELOG.md) v4.1.0。
 
 ### 15. executor.go 超时分支 data race
 

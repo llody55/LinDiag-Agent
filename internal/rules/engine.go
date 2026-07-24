@@ -45,19 +45,11 @@ type Engine struct {
 }
 
 // NewEngine 创建引擎并装载内置规则集。
-// 规则集在本函数中显式列出，便于审阅与增减。
+// 规则集通过 newBuiltinRules() 按平台分流加载（见 rules_builtin_linux.go /
+// rules_builtin_windows.go），便于审阅与增减。
 func NewEngine() *Engine {
 	return &Engine{
-		rules: []Rule{
-			&loadAvgRule{},
-			&memPressureRule{},
-			&diskCapacityRule{},
-			&diskInodeRule{},
-			&zombieProcessRule{},
-			&oomKernelRule{},
-			&conntrackRule{},
-			&failedServicesRule{},
-		},
+		rules: newBuiltinRules(),
 	}
 }
 
@@ -76,22 +68,27 @@ func (e *Engine) Run(snapshot string) []diagnosis.Issue {
 // === 辅助函数 ===
 
 // extractCommandOutput 从快照中提取指定命令的输出段。
-// 快照格式：以 "$ cmd\n" 开头的段，下一段以 "$ " 开头或 EOF 结束。
+// 快照格式：以 "$ cmd\n"（Linux）或 "> cmd\n"（Windows）开头的段，
+// 下一段以 "$ " 或 ">" 开头或 EOF 结束。
 // cmd 可以是命令的前缀（如 "df -h" 匹配 "$ df -h"）。
 // 找不到返回空串。
 func extractCommandOutput(snapshot, cmdPrefix string) string {
 	lines := strings.Split(snapshot, "\n")
 	var b strings.Builder
 	capturing := false
-	prefix := "$ " + cmdPrefix
+	// 尝试两种前缀
+	prefixes := []string{"$ " + cmdPrefix, "> " + cmdPrefix}
 	for _, ln := range lines {
-		if strings.HasPrefix(ln, "$ ") {
+		// 检查是否是命令提示符开头（Linux: $, Windows: >）
+		if strings.HasPrefix(ln, "$ ") || strings.HasPrefix(ln, "> ") {
 			if capturing {
 				break // 下一条命令开始，结束当前段
 			}
-			if strings.HasPrefix(ln, prefix) {
-				capturing = true
-				continue // 跳过 "$ cmd" 行本身，只保留输出
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(ln, prefix) {
+					capturing = true
+					break // 开始捕获输出
+				}
 			}
 		} else if capturing {
 			b.WriteString(ln)

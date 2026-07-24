@@ -3,7 +3,7 @@ package platform
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os"
 	"strings"
 	"time"
 
@@ -25,8 +25,8 @@ func ExecuteCommand(cmd string) (string, error) {
 }
 
 func ExecuteCommandWithTimeout(cmd string, timeoutSeconds int) (string, error) {
-	if strings.HasSuffix(strings.TrimSpace(cmd), "&") {
-		c := exec.Command("sh", "-c", cmd)
+	if isBackgroundCommand(cmd) {
+		c := newShellCommand(cmd)
 		err := c.Start()
 		if err != nil {
 			return "", err
@@ -37,7 +37,7 @@ func ExecuteCommandWithTimeout(cmd string, timeoutSeconds int) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c := newShellCommandContext(ctx, cmd)
 	// 设置进程组（平台特定实现）
 	setProcessGroup(c)
 
@@ -106,18 +106,13 @@ func ExecuteCommandWithProgressAndTimeout(cmd string, timeoutSeconds int) (strin
 }
 
 func GetHostname() string {
-	hostname, err := exec.Command("hostname").Output()
+	hostname, err := os.Hostname()
 	if err != nil {
 		return "unknown"
 	}
-	return strings.TrimSpace(string(hostname))
+	return strings.TrimSpace(hostname)
 }
 
 func GetIPAddress() string {
-	cmd := "hostname -I | awk '{print $1}'"
-	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(string(out))
+	return getIPAddress()
 }

@@ -473,19 +473,23 @@ func (s *Session) trimHistory() {
 		break
 	}
 
-	// 识别关键节点消息：用户原始问题、最终结论、含 issues 的 assistant 响应
-	// 这些消息不能被尾部窗口裁掉
-	keyIndices := make([]int, 0, 8)
+	// 识别关键节点消息：用户原始问题、命令执行结果、含分析的 assistant 响应。
+	// 这些消息在多轮交互中承载诊断证据与分析，不能被尾部窗口裁掉，
+	// 否则报告只包含最后一轮交互。
+	keyIndices := make([]int, 0, 16)
 	for i := preamble; i < len(s.history); i++ {
 		m := s.history[i]
-		if m.Kind == diagnosis.KindUserRequirement {
+		switch m.Kind {
+		case diagnosis.KindUserRequirement, diagnosis.KindCommandResult:
 			keyIndices = append(keyIndices, i)
 			continue
 		}
+		// 所有带分析内容的 assistant 响应都保留（含 IsFinal 与含 Issues 的）；
+		// 不再只保留 IsFinal/issues 的，否则中间轮次的分析会丢失。
 		if m.Role == "assistant" && m.Kind == diagnosis.KindAgentResponse {
 			var resp diagnosis.AgentResponse
 			if json.Unmarshal([]byte(m.Content), &resp) == nil {
-				if resp.IsFinal || len(resp.Issues) > 0 {
+				if strings.TrimSpace(resp.Analysis) != "" || len(resp.Issues) > 0 {
 					keyIndices = append(keyIndices, i)
 				}
 			}

@@ -1,19 +1,16 @@
 package agent
 
 import (
-	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/LinDiag-Agent/internal/output"
 )
 
 // envCheckTimeout 单个环境检测命令的超时时间
 // 设为 3 秒：正常情况下本地命令瞬间完成，服务不可用时快速跳过
-const envCheckTimeout = 3 * time.Second
+const envCheckTimeout = 3 // 移除 time 包依赖，实际超时值由平台实现使用
 
 // DetectEnvironment 检测当前运行环境（Docker/K8s/Helm 等）。
 // 每个检测命令都有独立超时，服务挂掉时不会阻塞。
@@ -79,7 +76,7 @@ func renderEnvInfo(info *EnvInfo) []string {
 		envList = append(envList, "Kubernetes 客户端已安装")
 		if info.K8sConnected {
 			envList = append(envList, "K8s 集群已连接")
-			if out := runOutput("kubectl get ns 2>/dev/null | grep -i prometheus | head -1 | awk '{print $1}'"); strings.TrimSpace(out) != "" {
+			if prometheusDeployed() {
 				envList = append(envList, "Prometheus 已部署")
 			}
 		} else {
@@ -96,65 +93,4 @@ func renderEnvInfo(info *EnvInfo) []string {
 	}
 
 	return envList
-}
-
-// probeDocker 检测 Docker 安装与运行状态
-func probeDocker(info *EnvInfo, mu *sync.Mutex) {
-	if !checkCmd("which docker >/dev/null 2>&1") {
-		return
-	}
-	info.HasDocker = true
-	if checkCmd("docker info >/dev/null 2>&1") {
-		info.DockerRunning = true
-	} else {
-		mu.Lock()
-		info.AbnormalServices = append(info.AbnormalServices, "Docker")
-		mu.Unlock()
-	}
-}
-
-// probeKubernetes 检测 K8s 客户端与集群连通性
-func probeKubernetes(info *EnvInfo, mu *sync.Mutex) {
-	if !checkCmd("kubectl version --client >/dev/null 2>&1") {
-		return
-	}
-	info.HasKubernetes = true
-	if checkCmd("kubectl cluster-info >/dev/null 2>&1") {
-		info.K8sConnected = true
-	} else {
-		mu.Lock()
-		info.AbnormalServices = append(info.AbnormalServices, "Kubernetes")
-		mu.Unlock()
-	}
-}
-
-// probeHelmNoAbn 检测 Helm CLI 是否安装（不涉及异常状态）
-func probeHelmNoAbn(info *EnvInfo, _ *sync.Mutex) {
-	if checkCmd("which helm >/dev/null 2>&1") {
-		info.HasHelm = true
-	}
-}
-
-// probeNaliNoAbn 检测 nali IP 归属地工具是否安装（不涉及异常状态）
-func probeNaliNoAbn(info *EnvInfo, _ *sync.Mutex) {
-	if checkCmd("which nali >/dev/null 2>&1") {
-		info.HasNali = true
-	}
-}
-
-// checkCmd 运行命令，成功（exit 0）返回 true。
-// 带 3 秒超时，服务挂起时不会阻塞。
-func checkCmd(cmd string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), envCheckTimeout)
-	defer cancel()
-	err := exec.CommandContext(ctx, "sh", "-c", cmd).Run()
-	return err == nil
-}
-
-// runOutput 运行命令并返回输出。带 3 秒超时。
-func runOutput(cmd string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), envCheckTimeout)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, "sh", "-c", cmd).CombinedOutput()
-	return string(out)
 }

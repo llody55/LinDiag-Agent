@@ -33,7 +33,7 @@ func buildEnvContext(env *EnvInfo) string {
 		hasHeading = true
 		sb.WriteString(fmt.Sprintf("**检测到以下服务异常，请优先诊断其失败原因：**\n"))
 		for _, svc := range env.AbnormalServices {
-			sb.WriteString(fmt.Sprintf("- %s（已安装但状态异常，快照中已含 `systemctl status %s` 输出）\n", svc, svc))
+			sb.WriteString(fmt.Sprintf("- %s（已安装但状态异常，快照中已含服务状态查询输出）\n", svc))
 		}
 		sb.WriteString("\n在分析中应首先评估这些异常服务是否与用户问题相关；若相关，给出针对该服务的诊断命令与修复步骤。\n\n")
 	}
