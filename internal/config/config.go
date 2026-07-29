@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -137,13 +138,36 @@ func SaveConfig(cfg *Config) error {
 		return err
 	}
 
-	file, err := os.Create(paths.ConfigFile())
+	data, err := json.Marshal(clean)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
-	enc := json.NewEncoder(file)
-	enc.SetIndent("", "  ")
-	return enc.Encode(clean)
+	// 原子写：临时文件 + rename，避免崩溃时留下半截文件
+	// 权限 0600：配置含 API Key，仅 owner 可读写
+	tmp, err := os.CreateTemp(paths.ConfigDir(), "config.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	// 格式化：写入前先缩进
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, data, "", "  "); err == nil {
+		if _, err := tmp.WriteAt(indented.Bytes(), 0); err == nil {
+			tmp.Truncate(int64(len(indented.Bytes())))
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, paths.ConfigFile())
 }

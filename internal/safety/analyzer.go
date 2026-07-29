@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/shlex"
 )
@@ -644,8 +645,8 @@ var riskyPatterns = []struct {
 	{regexp.MustCompile(`rm\s+-[rf]+\s+\.{2}`), "删除上级目录"},
 	{regexp.MustCompile(`mkfs\s+`), "格式化磁盘"},
 	{regexp.MustCompile(`dd\s+if=\S+\s+of=/dev/`), "向设备写入数据"},
-	{regexp.MustCompile(`chmod\s+777\s+/(\s|$)`), "全局可写根目录"},
-	{regexp.MustCompile(`chown\s+\S+:\S+\s+/(\s|$)`), "更改根目录所有权"},
+	{regexp.MustCompile(`chmod\s+777\s+/(?:\S*)?(?:\s|$)`), "全局可写关键目录"},
+	{regexp.MustCompile(`chown\s+\S+:\S+\s+/(?:\S*)?(?:\s|$)`), "更改关键目录所有权"},
 	{regexp.MustCompile(`:\(\)\s*\{`), "fork bomb"},
 	{regexp.MustCompile(`>\s*/dev/sd`), "直接写入磁盘设备"},
 	// === Windows 危险模式 ===
@@ -736,6 +737,9 @@ var commandDescriptions = map[string]string{
 // safeCommandSet 用于 O(1) 查找的集合，与 safeCommands 保持同步
 var safeCommandSet map[string]bool
 
+// safeMu 保护 safeCommands 和 safeCommandSet 的并发读写
+var safeMu sync.RWMutex
+
 func init() {
 	rebuildSafeCommandSet()
 }
@@ -767,6 +771,9 @@ func LoadWhitelist(filename string) error {
 
 	scanner := bufio.NewScanner(file)
 
+	safeMu.Lock()
+	defer safeMu.Unlock()
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -784,11 +791,15 @@ func LoadWhitelist(filename string) error {
 
 // GetSafeCommands 获取安全命令列表
 func GetSafeCommands() []string {
+	safeMu.RLock()
+	defer safeMu.RUnlock()
 	return safeCommands
 }
 
 // isSafeCommand 判断命令名是否在安全白名单中
 func isSafeCommand(name string) bool {
+	safeMu.RLock()
+	defer safeMu.RUnlock()
 	return safeCommandSet[name]
 }
 
@@ -817,13 +828,42 @@ func (a *CommandAnalyzer) AnalyzeCommand(cmd string) *CommandInfo {
 
 // analyzeCommandChain 分析可能包含管道、&&、; 的命令链
 func (a *CommandAnalyzer) analyzeCommandChain(cmd string) *CommandInfo {
-	// 按管道、&&、||、; 分割为子命令
 	subCmds := splitCommandChain(cmd)
 	if len(subCmds) == 1 {
 		return a.analyzeSingleCommand(subCmds[0])
 	}
 
-	// 多个子命令：取最高风险等级
+	// 管道右段递归分析：当管道右侧是命令执行器（bash/sh/zsh 等）时，
+	// 管道左侧的内容作为子命令递归分析风险，
+	// 避免 echo "rm -rf /" | bash 被误判为 Low（echo Safe + bash 无 -c High 但原因不精准）。
+	if len(subCmds) == 2 {
+		rightParts, err := shlex.Split(subCmds[1])
+		if err != nil {
+			rightParts = strings.Fields(subCmds[1])
+		}
+		if len(rightParts) > 0 && commandExecutors[rightParts[0]] {
+			// 管道右侧是命令执行器，递归分析左侧内容
+			leftInfo := a.AnalyzeCommand(subCmds[0])
+			// 管道执行器最低 Medium（绕过直接调用路径）
+			pipeRisk := leftInfo.RiskLevel
+			if pipeRisk < RiskLevelMedium {
+				pipeRisk = RiskLevelMedium
+			}
+			pipeInfo := &CommandInfo{
+				RiskLevel:   pipeRisk,
+				Reason:      fmt.Sprintf("管道向 %s 传入: %s", rightParts[0], leftInfo.Reason),
+				Explanation: leftInfo.Explanation,
+			}
+			// 同时分析右侧自身风险（如 xargs rm → Critical），
+			// 取两者中更高的风险等级
+			rightInfo := a.analyzeSingleCommand(subCmds[1])
+			if rightInfo.RiskLevel > pipeInfo.RiskLevel {
+				return rightInfo
+			}
+			return pipeInfo
+		}
+	}
+
 	maxRisk := RiskLevelSafe
 	var reason, explanation string
 	for _, sub := range subCmds {
@@ -848,20 +888,67 @@ func (a *CommandAnalyzer) analyzeCommandChain(cmd string) *CommandInfo {
 	}
 }
 
-// splitCommandChain 将命令按管道和逻辑操作符分割为子命令
+// splitCommandChain 将命令按管道和逻辑操作符分割为子命令。
+// 使用 rune 状态机扫描，仅在引号外部识别 |、&&、||、; 操作符，
+// 避免引号内的这些字符被错误分割（如 sh -c "rm -rf / | nc evil"）。
 func splitCommandChain(cmd string) []string {
-	// 简单分割：按 |、&&、||、; 分割（不处理引号内的这些符号，因为运维命令中罕见）
-	// 用正则分割，保留操作符上下文
-	re := regexp.MustCompile(`\|\||&&|\||;`)
-	parts := re.Split(cmd, -1)
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
+	var parts []string
+	var buf []rune
+	quote := rune(0) // 0=无引号, '\''=单引号, '"'=双引号
+
+	runes := []rune(cmd)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		// 引号状态切换
+		if quote == 0 {
+			if r == '\'' || r == '"' {
+				quote = r
+				buf = append(buf, r)
+				continue
+			}
+		} else {
+			// 在引号内：只有匹配的引号才能关闭
+			if r == quote {
+				quote = 0
+			}
+			buf = append(buf, r)
+			continue
 		}
+
+		// 引号外：检查多字符操作符 && 和 ||
+		if i+1 < len(runes) {
+			two := string(runes[i : i+2])
+			if two == "&&" || two == "||" {
+				part := strings.TrimSpace(string(buf))
+				if part != "" {
+					parts = append(parts, part)
+				}
+				buf = nil
+				i++ // skip second char
+				continue
+			}
+		}
+
+		// 引号外：检查单字符操作符 | 和 ;
+		if r == '|' || r == ';' {
+			part := strings.TrimSpace(string(buf))
+			if part != "" {
+				parts = append(parts, part)
+			}
+			buf = nil
+			continue
+		}
+
+		buf = append(buf, r)
 	}
-	return result
+
+	// 尾部剩余
+	part := strings.TrimSpace(string(buf))
+	if part != "" {
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 // analyzeSingleCommand 分析单条命令（不含管道和逻辑操作符）
@@ -1195,30 +1282,65 @@ func (a *CommandAnalyzer) analyzeCommandExecutor(name string, parts []string, fu
 		}
 	}
 
-	// xargs / sudo：分析后续参数作为子命令
-	if name == "xargs" || name == "sudo" {
+	if name == "sudo" {
+		// sudo -i/-s/--login/--shell 启动交互式 shell → High
+		for _, p := range parts[1:] {
+			if p == "-i" || p == "-s" || p == "--login" || p == "--shell" {
+				return &CommandInfo{
+					RiskLevel:   RiskLevelHigh,
+					Reason:      "sudo 启动交互式 shell，可执行任意命令",
+					Explanation: "sudo " + p + " 会以 root 身份打开 shell，风险极高",
+				}
+			}
+		}
 		// 找到第一个非 flag 参数作为子命令
 		for i := 1; i < len(parts); i++ {
 			if !strings.HasPrefix(parts[i], "-") {
-				// 递归分析子命令
 				subCmd := strings.Join(parts[i:], " ")
 				subInfo := a.analyzeSingleCommand(subCmd)
-				// sudo 提升一级风险
 				risk := subInfo.RiskLevel
-				if name == "sudo" && risk < RiskLevelMedium {
+				if risk < RiskLevelMedium {
 					risk = RiskLevelMedium
 				}
 				return &CommandInfo{
 					RiskLevel:   risk,
-					Reason:      fmt.Sprintf("%s 配合: %s", name, subInfo.Reason),
+					Reason:      fmt.Sprintf("sudo 配合: %s", subInfo.Reason),
 					Explanation: subInfo.Explanation,
 				}
 			}
 		}
 		return &CommandInfo{
 			RiskLevel:   RiskLevelMedium,
-			Reason:      name + " 执行",
-			Explanation: name + " 可能执行任意子命令",
+			Reason:      "sudo 执行",
+			Explanation: "sudo 可能以 root 身份执行任意子命令",
+		}
+	}
+
+	if name == "xargs" {
+		// xargs -I/-L/-n/-P 等带值 flag 需跳过其值参数
+		for i := 1; i < len(parts); i++ {
+			p := parts[i]
+			if strings.HasPrefix(p, "-") {
+				// 带值 flag：跳过下一个参数
+				if p == "-I" || p == "-L" || p == "-n" || p == "-P" ||
+					p == "--replace" || p == "--max-lines" || p == "--max-args" || p == "--max-procs" {
+					i++ // skip value
+				}
+				continue
+			}
+			// 第一个非 flag 参数是子命令
+			subCmd := strings.Join(parts[i:], " ")
+			subInfo := a.analyzeSingleCommand(subCmd)
+			return &CommandInfo{
+				RiskLevel:   subInfo.RiskLevel,
+				Reason:      fmt.Sprintf("xargs 配合: %s", subInfo.Reason),
+				Explanation: subInfo.Explanation,
+			}
+		}
+		return &CommandInfo{
+			RiskLevel:   RiskLevelMedium,
+			Reason:      "xargs 执行",
+			Explanation: "xargs 可能执行任意子命令",
 		}
 	}
 

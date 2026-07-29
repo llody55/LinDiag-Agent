@@ -1,9 +1,11 @@
 package report
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/LinDiag-Agent/internal/output"
 )
@@ -86,6 +88,10 @@ func runConverter(conv, kind, htmlPath, pdfPath string) error {
 		return fmt.Errorf("unknown converter kind: %s", kind)
 	}
 	// CombinedOutput 让转换器的 stderr 错误信息进入日志，便于排查
+	// PDF 转换设置 60 秒超时，避免外部工具卡死
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd = exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w (stderr: %s)", kind, err, string(out))

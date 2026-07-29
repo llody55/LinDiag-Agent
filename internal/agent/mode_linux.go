@@ -10,6 +10,21 @@ func serviceStatusCmd(serviceName string) string {
 	return fmt.Sprintf("systemctl status %s --no-pager 2>/dev/null | head -n 15", serviceName)
 }
 
+// isSafeServiceName 校验服务名是否只含安全字符，防止 shell 注入
+func isSafeServiceName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' ||
+			r == '.' || r == '@') {
+			return false
+		}
+	}
+	return true
+}
+
 // baseSnapshotCmds 所有模式共享的基础快照命令集（Linux 实现）。
 // 主题分块：基础资源 → 进程/负载 → 内核日志 → 磁盘详情 → 僵尸进程。
 func baseSnapshotCmds(env *EnvInfo) []string {
@@ -45,7 +60,11 @@ func baseSnapshotCmds(env *EnvInfo) []string {
 		)
 	}
 	for _, svc := range env.AbnormalServices {
-		cmds = append(cmds, serviceStatusCmd(svc))
+		// 白名单校验：仅允许字母、数字、-_\.@ 等安全字符，
+		// 防止服务名注入额外 shell 命
+		if isSafeServiceName(svc) {
+			cmds = append(cmds, serviceStatusCmd(svc))
+		}
 	}
 	return cmds
 }

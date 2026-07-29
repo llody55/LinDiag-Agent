@@ -41,7 +41,7 @@ cd LinDiag-Agent
 
 #### Windows
 
-> 自 v4.1.0 起，LinDiag-Agent 提供 Windows 平台原生支持。
+> 自 v4.2.0 起，LinDiag-Agent 提供 Windows 平台原生支持。
 > Windows 端通过 PowerShell 执行诊断命令（`powershell -NoProfile -NonInteractive -Command`），
 > 内置 5 条 Windows 规则、Windows 安全分析器与路径规范。
 
@@ -245,7 +245,7 @@ Enter your choice:
 | ---------- | ----------- | ------------------------------- | --------- | ----------------- |
 | Linux      | amd64       | `lindiag-agent_amd64_linux`     | `sh -c`   | v4.0 起完整可用   |
 | Linux      | arm64       | `lindiag-agent_arm64_linux`     | `sh -c`   | v4.0 起完整可用   |
-| Windows    | amd64       | `lindiag-agent.exe`             | PowerShell| v4.1.0 起完整可用 |
+| Windows    | amd64       | `lindiag-agent.exe`             | PowerShell| v4.2.0 起完整可用 |
 
 > **Windows 依赖**：需 Windows 7+ 与 PowerShell 5.1+（Windows 10/11 默认自带）。
 > Windows 端通过 `Get-CimInstance` / `Get-Process` / `Get-Volume` 等 cmdlet 实现

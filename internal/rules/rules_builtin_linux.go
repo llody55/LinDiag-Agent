@@ -230,7 +230,8 @@ func (r *zombieProcessRule) Match(snapshot string) []diagnosis.Issue {
 			continue
 		}
 		// stat 列首字符 Z 表示僵尸；格式 "Z  1234 cmd"
-		if strings.HasPrefix(trimmed, "Z") {
+		// Z 后可跟修饰符（+ < N L s 等），需确保 Z 是 stat 字段首字符
+		if len(trimmed) > 0 && trimmed[0] == 'Z' && (len(trimmed) == 1 || trimmed[1] == ' ' || trimmed[1] == '\t' || trimmed[1] == '+' || trimmed[1] == '<' || trimmed[1] == 'N' || trimmed[1] == 'L' || trimmed[1] == 's') {
 			zombieCount++
 		}
 	}

@@ -7,6 +7,11 @@ import (
 	"github.com/LinDiag-Agent/internal/diagnosis"
 )
 
+var (
+	firstNumberRe    = regexp.MustCompile(`[-+]?\d*\.?\d+`)
+	parseHumanSizeRe = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$`)
+)
+
 // rules_builtin.go 内置阈值规则集的平台无关工具函数。
 // 规则实现按平台拆分到 rules_builtin_linux.go / rules_builtin_windows.go，
 // 各自提供 newBuiltinRules() 返回对应平台的规则集。
@@ -25,8 +30,7 @@ func parseHumanSize(s string) float64 {
 	if s == "" {
 		return 0
 	}
-	re := regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$`)
-	m := re.FindStringSubmatch(s)
+	m := parseHumanSizeRe.FindStringSubmatch(s)
 	if m == nil {
 		return 0
 	}

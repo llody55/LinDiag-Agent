@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LinDiag-Agent/internal/config"
@@ -20,6 +21,9 @@ var (
 	client    *openai.Client
 	// degradedFormat 记忆降级状态：一旦 API 不支持某格式，后续不再尝试
 	degradedFormat ResponseFormatType
+
+	// configMu 保护 appConfig 和 degradedFormat 的并发读写
+	configMu sync.RWMutex
 )
 
 // ResponseFormatType 别名，避免循环导入
@@ -31,15 +35,17 @@ func Init() error {
 	if err != nil {
 		return err
 	}
+	configMu.Lock()
 	appConfig = cfg
+	configMu.Unlock()
 
 	// 配置 OpenAI 兼容客户端（支持自定义 base_url，适配 DeepSeek 等中转）
-	clientCfg := openai.DefaultConfig(appConfig.LLM.APIKey)
-	if appConfig.LLM.APIURL != "" {
+	clientCfg := openai.DefaultConfig(cfg.LLM.APIKey)
+	if cfg.LLM.APIURL != "" {
 		// SDK 的 BaseURL 只需要 base 部分（如 https://api.deepseek.com/v1），
 		// 它会自动拼接 /chat/completions。
 		// 但用户配置可能是完整端点 URL，需要兼容处理。
-		clientCfg.BaseURL = normalizeBaseURL(appConfig.LLM.APIURL)
+		clientCfg.BaseURL = normalizeBaseURL(cfg.LLM.APIURL)
 	}
 	client = openai.NewClientWithConfig(clientCfg)
 	return nil
@@ -59,12 +65,16 @@ func normalizeBaseURL(url string) string {
 
 // GetConfig 获取当前配置
 func GetConfig() *config.Config {
+	configMu.RLock()
+	defer configMu.RUnlock()
 	return appConfig
 }
 
 // SaveConfig 保存配置
 func SaveConfig(cfg *config.Config) error {
+	configMu.Lock()
 	appConfig = cfg
+	configMu.Unlock()
 	return config.SaveConfig(cfg)
 }
 
@@ -72,15 +82,21 @@ func SaveConfig(cfg *config.Config) error {
 // 支持 json_schema / json_object / none 三种模式自动降级。
 // context 用于超时和取消控制。
 func CallAI(ctx context.Context, messages []Message) (AgentResponse, error) {
+	configMu.RLock()
 	if appConfig == nil {
+		configMu.RUnlock()
 		if err := Init(); err != nil {
 			return AgentResponse{}, fmt.Errorf("初始化配置失败: %w", err)
 		}
+		configMu.RLock()
 	}
-	if appConfig.LLM.APIKey == "" || appConfig.LLM.APIKey == "你的API_KEY" {
+	cfg := appConfig
+	if cfg.LLM.APIKey == "" || cfg.LLM.APIKey == "你的API_KEY" {
+		configMu.RUnlock()
 		return AgentResponse{}, errors.New("请先配置正确的 API_KEY")
 	}
 	if client == nil {
+		configMu.RUnlock()
 		return AgentResponse{}, errors.New("LLM 客户端未初始化")
 	}
 
@@ -100,12 +116,13 @@ func CallAI(ctx context.Context, messages []Message) (AgentResponse, error) {
 	}
 
 	// 根据降级记忆决定使用哪种格式
-	format := appConfig.LLM.ResponseFormat
+	format := cfg.LLM.ResponseFormat
 	if degradedFormat == config.ResponseFormatJSONObject && format == config.ResponseFormatJSONSchema {
 		format = config.ResponseFormatJSONObject
 	} else if degradedFormat == config.ResponseFormatNone {
 		format = config.ResponseFormatNone
 	}
+	configMu.RUnlock()
 
 	switch format {
 	case config.ResponseFormatJSONSchema:
@@ -129,8 +146,12 @@ func callWithJSONSchema(ctx context.Context, msgs []openai.ChatCompletionMessage
 	for attempt := 0; attempt < 3; attempt++ {
 		output.StatusTimef(output.Cyan, "正在连接 AI (尝试 %d/3, Structured Outputs)...", attempt+1)
 
+		configMu.RLock()
+		modelName := appConfig.LLM.ModelName
+		configMu.RUnlock()
+
 		req := openai.ChatCompletionRequest{
-			Model:    appConfig.LLM.ModelName,
+			Model:    modelName,
 			Messages: msgs,
 			ResponseFormat: &openai.ChatCompletionResponseFormat{
 				Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
@@ -146,13 +167,15 @@ func callWithJSONSchema(ctx context.Context, msgs []openai.ChatCompletionMessage
 		if err != nil {
 			if isRetryableError(err) && attempt < 2 {
 				output.WarningInplacef("%v", err)
-				time.Sleep(3 * time.Second)
+				time.Sleep(retryBackoff(attempt))
 				continue
 			}
 			// 若 API 不支持 json_schema，降级到 json_object
 			if isUnsupportedFormatError(err) {
 				output.Degradef("当前 API 不支持 Structured Outputs，降级到 JSON Mode（后续不再尝试）")
+				configMu.Lock()
 				degradedFormat = config.ResponseFormatJSONObject
+				configMu.Unlock()
 				return callWithJSONObject(ctx, msgs)
 			}
 			return AgentResponse{}, fmt.Errorf("AI 调用失败: %w", err)
@@ -184,8 +207,12 @@ func callWithJSONObject(ctx context.Context, msgs []openai.ChatCompletionMessage
 	for attempt := 0; attempt < 3; attempt++ {
 		output.StatusTimef(output.Cyan, "正在连接 AI (尝试 %d/3, JSON Mode)...", attempt+1)
 
+		configMu.RLock()
+		modelName := appConfig.LLM.ModelName
+		configMu.RUnlock()
+
 		req := openai.ChatCompletionRequest{
-			Model:    appConfig.LLM.ModelName,
+			Model:    modelName,
 			Messages: guidedMsgs,
 			ResponseFormat: &openai.ChatCompletionResponseFormat{
 				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
@@ -196,12 +223,14 @@ func callWithJSONObject(ctx context.Context, msgs []openai.ChatCompletionMessage
 		if err != nil {
 			if isRetryableError(err) && attempt < 2 {
 				output.WarningInplacef("%v", err)
-				time.Sleep(3 * time.Second)
+				time.Sleep(retryBackoff(attempt))
 				continue
 			}
 			if isUnsupportedFormatError(err) {
 				output.Degradef("当前 API 不支持 JSON Mode，降级到无格式约束模式（后续不再尝试）")
+				configMu.Lock()
 				degradedFormat = config.ResponseFormatNone
+				configMu.Unlock()
 				return callWithNone(ctx, msgs)
 			}
 			return AgentResponse{}, fmt.Errorf("AI 调用失败: %w", err)
@@ -234,8 +263,12 @@ func callWithNone(ctx context.Context, msgs []openai.ChatCompletionMessage) (Age
 	for attempt := 0; attempt < 3; attempt++ {
 		output.StatusTimef(output.Cyan, "正在连接 AI (尝试 %d/3)...", attempt+1)
 
+		configMu.RLock()
+		modelName := appConfig.LLM.ModelName
+		configMu.RUnlock()
+
 		req := openai.ChatCompletionRequest{
-			Model:    appConfig.LLM.ModelName,
+			Model:    modelName,
 			Messages: guidedMsgs,
 		}
 
@@ -243,7 +276,7 @@ func callWithNone(ctx context.Context, msgs []openai.ChatCompletionMessage) (Age
 		if err != nil {
 			if isRetryableError(err) && attempt < 2 {
 				output.WarningInplacef("%v", err)
-				time.Sleep(3 * time.Second)
+				time.Sleep(retryBackoff(attempt))
 				continue
 			}
 			return AgentResponse{}, fmt.Errorf("AI 调用失败: %w", err)
@@ -333,7 +366,20 @@ func isUnsupportedFormatError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "response_format") ||
 		strings.Contains(msg, "json_schema") ||
-		strings.Contains(msg, "not supported") ||
-		strings.Contains(msg, "invalid") ||
-		strings.Contains(msg, "400")
+		strings.Contains(msg, "not supported")
+}
+
+// retryBackoff 返回第 attempt 次（0-based）重试的等待时间。
+// 基础 1s，指数退避 ×2，上限 8s，加 ±200ms 抖动。
+func retryBackoff(attempt int) time.Duration {
+	base := time.Second << uint(attempt) // 1s, 2s, 4s, 8s, ...
+	if base > 8*time.Second {
+		base = 8 * time.Second
+	}
+	// 抖动：±200ms
+	jitter := time.Duration(0)
+	if base > 0 {
+		jitter = time.Duration(int64(base) / 10) // ±10%
+	}
+	return base + jitter - 40*time.Millisecond + time.Duration(80*attempt)*time.Millisecond
 }

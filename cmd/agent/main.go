@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/LinDiag-Agent/internal/agent"
 	"github.com/LinDiag-Agent/internal/config"
@@ -82,11 +84,15 @@ func main() {
 		return
 	}
 
+	// 信号处理：Ctrl+C 优雅退出
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// 处理命令行参数
 	if len(os.Args) > 1 {
 		if os.Args[1] == "load" && len(os.Args) > 2 {
 			// 加载历史记录模式
-			runWithHistory(os.Args[2])
+			runWithHistory(ctx, os.Args[2])
 			return
 		}
 		if os.Args[1] == "report" && len(os.Args) > 3 {
@@ -105,12 +111,12 @@ func main() {
 	}
 
 	// 正常启动交互模式
-	runInteractive()
+	runInteractive(ctx)
 }
 
-func runInteractive() {
+func runInteractive(ctx context.Context) {
 	reader := bufio.NewReader(os.Stdin)
-	output.SectionTitle("LinDiag-Agent v4.0 智能运维诊断工具")
+	output.SectionTitle("LinDiag-Agent v4.2 智能运维诊断工具")
 
 	// 加载本地规则（路径由 paths 包统一管理：$XDG_CONFIG_HOME/lindiag/rules.txt）
 	rules := ""
@@ -148,14 +154,14 @@ func runInteractive() {
 	output.Statusln("🚀 已进入【%s】", mode.Name())
 
 	// 创建并运行会话
-	session := agent.NewSession(mode, reader, rules, context.Background())
+	session := agent.NewSession(mode, reader, rules, ctx)
 	session.InitHistory()
 	session.Run()
 }
 
-func runWithHistory(historyFile string) {
+func runWithHistory(ctx context.Context, historyFile string) {
 	reader := bufio.NewReader(os.Stdin)
-	output.SectionTitle("LinDiag-Agent v4.0 智能运维诊断工具")
+	output.SectionTitle("LinDiag-Agent v4.2 智能运维诊断工具")
 
 	output.InfoMessage("尝试加载历史记录: " + historyFile)
 
@@ -165,7 +171,7 @@ func runWithHistory(historyFile string) {
 		output.ErrorMessage("未找到可用的诊断模式")
 		return
 	}
-	session := agent.NewSession(mode, reader, "", context.Background())
+	session := agent.NewSession(mode, reader, "", ctx)
 
 	if err := session.LoadHistory(historyFile); err != nil {
 		output.ErrorMessage("加载历史记录失败: " + err.Error())

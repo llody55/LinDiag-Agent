@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ type Session struct {
 	// lastSaveErr 记录增量保存过程中遇到的最后一个错误。
 	// Run() 结尾会连同最终保存结果一起报告，避免中间失败被静默忽略。
 	lastSaveErr error
+	aiFailCount int // 连续 AI 调用失败计数
 }
 
 // SessionOption NewSession 的可选依赖注入参数。
@@ -139,6 +141,10 @@ func NewSession(mode DiagnosticMode, reader *bufio.Reader, ruleText string, ctx 
 	for _, opt := range opts {
 		opt(s)
 	}
+	// 如果注入了自定义 LLMClient，同步到 handler（用于高危命令 AI 解释）
+	if _, ok := s.llmClient.(llmPackageAdapter); !ok && s.llmClient != nil {
+		s.handler.WithLLMClient(s.llmClient)
+	}
 	// 数据目录一次性就绪；失败不阻塞 Session 构造，
 	// 真正写盘时 saveHistory 会再返回具体错误。
 	_ = paths.EnsureDataDir()
@@ -156,6 +162,19 @@ func newHistoryFilename() string {
 // 兼容旧版历史文件（无 Kind 字段）：json.Unmarshal 会把缺失字段置零，
 // 读取端 report/engine.go 会回退到字符串特征识别。
 func (s *Session) LoadHistory(historyFile string) error {
+	// 路径校验：历史文件必须在数据目录下，防止路径遍历
+	absPath, err := filepath.Abs(historyFile)
+	if err != nil {
+		return fmt.Errorf("路径解析失败: %w", err)
+	}
+	dataDir, err := filepath.Abs(paths.DataDir())
+	if err != nil {
+		return fmt.Errorf("数据目录解析失败: %w", err)
+	}
+	if !strings.HasPrefix(absPath, dataDir+string(filepath.Separator)) && absPath != dataDir {
+		// 兼容：旧版历史文件可能在 CWD，给出警告但不拒绝
+		output.WarningMessage("历史文件不在数据目录下: " + historyFile)
+	}
 	data, err := os.ReadFile(historyFile)
 	if err != nil {
 		return err
@@ -312,11 +331,14 @@ func (s *Session) runLoop() {
 
 		resp, err := s.llmClient.CallAI(s.ctx, s.history)
 		if err != nil {
-			if !s.handleAIFailure(err) {
+			s.aiFailCount++
+			if s.aiFailCount >= 5 || !s.handleAIFailure(err) {
+				output.ErrorMessage("AI 连续调用失败次数过多，自动保存并退出")
 				return
 			}
 			continue
 		}
+		s.aiFailCount = 0 // 成功后重置
 		roundsSinceFinal++
 		s.history = append(s.history, diagnosis.NewMessage("assistant", resp.ToJSON(), diagnosis.KindAgentResponse))
 		if len(resp.Issues) > 0 {
@@ -401,6 +423,10 @@ func (s *Session) handleAIFailure(err error) bool {
 func (s *Session) readUserAction() (string, userAction) {
 	firstIter := true
 	for {
+		if s.ctx.Err() != nil {
+			return "", actionExit
+		}
+
 		// 每次阻塞读取前都打印提示：
 		//   - 首次进入：按 afterFinal 决定是否显示完整 InputPromptBox
 		//   - 报告生成后回到循环：必须重新显示，否则用户看不到程序在等待输入
@@ -501,9 +527,21 @@ func (s *Session) trimHistory() {
 	// 关键节点若落在窗口外，则额外保留
 	preserve := make([]diagnosis.Message, 0, preamble+maxKeep+len(keyIndices))
 	preserve = append(preserve, s.history[:preamble]...)
+	lastAnchorIdx := preamble - 1
 	for _, idx := range keyIndices {
 		if idx < tailStart {
 			preserve = append(preserve, s.history[idx])
+			if idx > lastAnchorIdx {
+				lastAnchorIdx = idx
+			}
+		}
+	}
+	// 桥接窗口：保留最后一个锚点与尾部窗口之间的消息，
+	// 避免关键节点到尾部之间因果链断裂
+	if lastAnchorIdx >= preamble && lastAnchorIdx < tailStart {
+		bridgeStart := lastAnchorIdx + 1
+		for i := bridgeStart; i < tailStart; i++ {
+			preserve = append(preserve, s.history[i])
 		}
 	}
 	preserve = append(preserve, s.history[tailStart:]...)
@@ -550,11 +588,23 @@ func (s *Session) saveHistory() error {
 	if err != nil {
 		return err
 	}
-	tmp := s.historyFile + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	// 使用 os.CreateTemp 在同目录生成唯一临时文件，避免并发写冲突
+	dir := filepath.Dir(s.historyFile)
+	tmp, err := os.CreateTemp(dir, "history.*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.historyFile)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, s.historyFile)
 }
 
 // saveHistorySilently 增量保存历史，记录错误到 lastSaveErr 供 Run() 末尾报告。

@@ -2,11 +2,19 @@ package output
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/LinDiag-Agent/internal/diagnosis"
 )
+
+// Writer 是 output 包的输出目标，默认 os.Stdout。
+// 替换此变量可重定向所有通过 output 包输出的内容（用于测试/嵌入式场景）。
+// 注意：当前大部分输出仍通过 fmt.Print* 直接写 stdout，
+// 完整重定向需要将 fmt.Print* 调用替换为 fmt.Fprint(Writer, ...)，
+// 此变量为渐进迁移提供入口。
+var Writer = os.Stdout
 
 // 颜色常量 — 全项目唯一颜色定义。
 // 当 colorDisabled=true（非终端或 NO_COLOR）时，

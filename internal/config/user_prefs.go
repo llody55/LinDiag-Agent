@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"sync"
 
 	"github.com/LinDiag-Agent/internal/paths"
 )
@@ -18,6 +19,9 @@ type UserPreferences struct {
 
 var userPrefs = &UserPreferences{}
 
+// prefsMu 保护 userPrefs 的并发读写
+var prefsMu sync.RWMutex
+
 // LoadUserPreferences 从 paths 包指定的位置加载用户偏好。
 // 找不到文件不视为错误（首次启动 / 升级场景）。
 func LoadUserPreferences() {
@@ -25,6 +29,8 @@ func LoadUserPreferences() {
 	if err != nil {
 		return
 	}
+	prefsMu.Lock()
+	defer prefsMu.Unlock()
 	_ = json.Unmarshal(data, userPrefs)
 }
 
@@ -35,20 +41,28 @@ func SaveUserPreferences() {
 	if err := paths.EnsureConfigDir(); err != nil {
 		return
 	}
+	prefsMu.RLock()
 	data, _ := json.Marshal(userPrefs)
+	prefsMu.RUnlock()
 	_ = os.WriteFile(paths.UserPrefsFile(), data, 0644)
 }
 
 func GetUserPreferences() *UserPreferences {
+	prefsMu.RLock()
+	defer prefsMu.RUnlock()
 	return userPrefs
 }
 
 func SetAutoConfirmLowRisk(enabled bool) {
+	prefsMu.Lock()
 	userPrefs.AutoConfirmLowRisk = enabled
+	prefsMu.Unlock()
 	SaveUserPreferences()
 }
 
 func SetAutoConfirmMediumRisk(enabled bool) {
+	prefsMu.Lock()
 	userPrefs.AutoConfirmMediumRisk = enabled
+	prefsMu.Unlock()
 	SaveUserPreferences()
 }

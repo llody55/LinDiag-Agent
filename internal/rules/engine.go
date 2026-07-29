@@ -20,7 +20,6 @@
 package rules
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -114,8 +113,7 @@ func parsePercent(s string) (int, bool) {
 
 // firstNumber 返回字符串中第一段可解析的整数（用于 uptime load 等）。
 func firstNumber(s string) (float64, bool) {
-	re := regexp.MustCompile(`[-+]?\d*\.?\d+`)
-	loc := re.FindStringIndex(s)
+	loc := firstNumberRe.FindStringIndex(s)
 	if loc == nil {
 		return 0, false
 	}

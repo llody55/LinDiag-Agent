@@ -474,9 +474,9 @@ code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-size: 13p
 
 	sb.WriteString("<h1>运维诊断报告</h1>\n")
 	sb.WriteString("<table>\n")
-	sb.WriteString(fmt.Sprintf("<tr><th>主机名</th><td>%s</td><th>IP 地址</th><td>%s</td></tr>\n", data.Hostname, data.IPAddress))
-	sb.WriteString(fmt.Sprintf("<tr><th>操作系统</th><td>%s</td><th>内核版本</th><td>%s</td></tr>\n", data.OSInfo, data.KernelVer))
-	sb.WriteString(fmt.Sprintf("<tr><th>运行时长</th><td>%s</td><th>生成时间</th><td>%s</td></tr>\n", data.UptimeInfo, data.GenerateTime))
+	sb.WriteString(fmt.Sprintf("<tr><th>主机名</th><td>%s</td><th>IP 地址</th><td>%s</td></tr>\n", escapeHTML(data.Hostname), escapeHTML(data.IPAddress)))
+	sb.WriteString(fmt.Sprintf("<tr><th>操作系统</th><td>%s</td><th>内核版本</th><td>%s</td></tr>\n", escapeHTML(data.OSInfo), escapeHTML(data.KernelVer)))
+	sb.WriteString(fmt.Sprintf("<tr><th>运行时长</th><td>%s</td><th>生成时间</th><td>%s</td></tr>\n", escapeHTML(data.UptimeInfo), escapeHTML(data.GenerateTime)))
 	sb.WriteString("</table>\n\n")
 
 	// 1. 问题描述
@@ -548,7 +548,7 @@ code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; font-size: 13p
 		sb.WriteString("<pre>" + escapeHTML(snap) + "</pre>\n\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("<div class=\"footer\">本报告由 LinDiag-Agent 于 %s 自动生成</div>\n", data.GenerateTime))
+	sb.WriteString(fmt.Sprintf("<div class=\"footer\">本报告由 LinDiag-Agent 于 %s 自动生成</div>\n", escapeHTML(data.GenerateTime)))
 	sb.WriteString("</body></html>\n")
 
 	if err := os.WriteFile(filename, []byte(sb.String()), 0644); err != nil {
@@ -629,6 +629,11 @@ func GenerateReport(historyFile string, format string) {
 		GeneratePDFReport(reportFilename, reportData)
 	}
 
+	// 验证报告文件是否实际生成
+	if _, err := os.Stat(reportFilename); os.IsNotExist(err) {
+		output.ErrorMessage("报告文件未生成: " + reportFilename)
+		return
+	}
 	output.SuccessMessage("报告已生成: " + reportFilename)
 }
 
@@ -652,7 +657,7 @@ func printPreview(data ReportData) {
 func truncateForPreview(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
-	if len(s) > maxLen {
+	if utf8.RuneCountInString(s) > maxLen {
 		return safeTruncate(s, maxLen) + "..."
 	}
 	if s == "" {
